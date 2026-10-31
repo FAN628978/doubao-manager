@@ -147,7 +147,7 @@ async def lifespan(app: FastAPI):
     global playwright_runtime
     init_db()
     from web_api import recover_interrupted_jobs
-    recover_interrupted_jobs(db)
+    recover_interrupted_jobs(db, base_dir=BASE_DIR)
     playwright_runtime = await async_playwright().start()
     yield
     # Cancel unfinished workers before closing their browser contexts. On shutdown,
@@ -158,7 +158,12 @@ async def lifespan(app: FastAPI):
         task.cancel()
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
-        recover_interrupted_jobs(db)
+        recover_interrupted_jobs(db, base_dir=BASE_DIR)
+    idle_closes = list(getattr(app.state, "video_idle_close_tasks", {}).values())
+    for task in idle_closes:
+        task.cancel()
+    if idle_closes:
+        await asyncio.gather(*idle_closes, return_exceptions=True)
     for account_id, context in list(open_contexts.items()):
         try:
             await context.close()
@@ -801,6 +806,11 @@ async def bulk_delete_jobs(payload: JobBulkDelete):
         conn.execute(f"DELETE FROM video_web_events WHERE job_id IN ({placeholders})", job_ids)
         conn.execute(f"DELETE FROM video_web_jobs WHERE job_id IN ({placeholders})", job_ids)
         conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", job_ids)
+
+    release_processing = getattr(app.state, "video_release_processing_job", None)
+    if release_processing is not None:
+        for job_id in job_ids:
+            await release_processing(job_id)
 
     prepared_pages = getattr(app.state, "video_prepared_pages", {})
     for job_id in job_ids:

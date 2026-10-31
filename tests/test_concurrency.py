@@ -10,9 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import web_api
 
 
-def test_different_accounts_run_concurrently(tmp_path, monkeypatch):
+def test_next_job_starts_after_first_enters_video_wait(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
-    monkeypatch.delenv("DOUBAO_MAX_CONCURRENT_ACCOUNTS", raising=False)
+    monkeypatch.setenv("DOUBAO_MAX_CONCURRENT_ACCOUNTS", "0")
     dbfile = tmp_path / "concurrency.sqlite"
 
     def db():
@@ -57,10 +57,13 @@ def test_different_accounts_run_concurrently(tmp_path, monkeypatch):
 
     async def run():
         app = FastAPI()
-        active_accounts = set()
-        maximum_active = 0
-        both_started = asyncio.Event()
+        active = 0
+        first_started = asyncio.Event()
+        first_waiting = asyncio.Event()
+        second_started = asyncio.Event()
+        allow_first_wait = asyncio.Event()
         release = asyncio.Event()
+        calls = []
 
         async def fake_browser(account_id):
             return account_id
@@ -68,15 +71,20 @@ def test_different_accounts_run_concurrently(tmp_path, monkeypatch):
         async def fake_perform(context, req, assets, target, on_status, on_page_url, on_binding,
                                on_manual_ready=None, confirmation_text="", close_on_success=False,
                                on_review_page=None):
-            nonlocal maximum_active
-            active_accounts.add(context)
-            maximum_active = max(maximum_active, len(active_accounts))
-            if len(active_accounts) == 5:
-                both_started.set()
+            nonlocal active
+            active += 1
+            calls.append(req.prompt)
+            if req.prompt == "first":
+                first_started.set()
+                await allow_first_wait.wait()
+                await on_status("generating", "等待视频生成")
+                first_waiting.set()
+            else:
+                second_started.set()
             await release.wait()
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"test-video")
-            active_accounts.remove(context)
+            active -= 1
             return {
                 "output": str(target),
                 "video_url": "https://example.com/video.mp4",
@@ -98,19 +106,34 @@ def test_different_accounts_run_concurrently(tmp_path, monkeypatch):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://local"
         ) as client:
-            created = [await client.post("/api/v1/videos/generations", json={
-                "prompt": f"任务{index}", "duration": 4, "auto_start": True,
-            }) for index in range(1, 6)]
-            assert all(response.status_code == 202 for response in created)
-            assert {response.json()["account_id"] for response in created} == {
-                f"account_{index}" for index in range(1, 6)
-            }
+            first = await client.post("/api/v1/videos/generations", json={
+                "account_id": "account_1",
+                "prompt": "first",
+                "duration": 4,
+                "auto_start": True,
+            })
+            assert first.status_code == 202
+            await asyncio.wait_for(first_started.wait(), timeout=1)
 
-            await asyncio.wait_for(both_started.wait(), timeout=1)
-            assert maximum_active == 5
+            second = await client.post("/api/v1/videos/generations", json={
+                "account_id": "account_2",
+                "prompt": "second",
+                "duration": 4,
+                "auto_start": True,
+            })
+            assert second.status_code == 202
+            await asyncio.sleep(0.05)
+            assert not second_started.is_set()
+            assert calls == ["first"]
+
+            allow_first_wait.set()
+            await asyncio.wait_for(first_waiting.wait(), timeout=1)
+            await asyncio.wait_for(second_started.wait(), timeout=1)
+            assert active == 2
+            assert calls == ["first", "second"]
             release.set()
 
-            job_ids = [response.json()["id"] for response in created]
+            job_ids = [first.json()["id"], second.json()["id"]]
             for _ in range(50):
                 states = [
                     (await client.get(f"/api/v1/videos/generations/{job_id}")).json()["status"]
@@ -119,13 +142,15 @@ def test_different_accounts_run_concurrently(tmp_path, monkeypatch):
                 if states == ["downloaded", "downloaded"]:
                     break
                 await asyncio.sleep(0.01)
-            assert states == ["downloaded"] * 5
+            assert states == ["downloaded", "downloaded"]
 
     asyncio.run(run())
 
 
 def test_same_account_runs_strictly_serial(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
+    monkeypatch.setenv("DOUBAO_MAX_CONCURRENT_ACCOUNTS", "0")
+    monkeypatch.setenv("DOUBAO_BROWSER_IDLE_CLOSE_SECONDS", "0")
     dbfile = tmp_path / "same-account.sqlite"
 
     def db():
@@ -213,7 +238,11 @@ def test_same_account_runs_strictly_serial(tmp_path, monkeypatch):
             assert states == ["downloaded", "downloaded"]
             assert maximum_active == 1
             assert browser_calls == ["account_1", "account_1"]
-            assert close_calls == ["account_1", "account_1"]
+            for _ in range(50):
+                if close_calls:
+                    break
+                await asyncio.sleep(0.01)
+            assert close_calls == ["account_1"]
 
     asyncio.run(run())
 
@@ -269,6 +298,7 @@ def test_processing_limit_updates_immediately_and_waiting_jobs_stay_queued(tmp_p
         maximum_active = 0
         first_started = asyncio.Event()
         second_started = asyncio.Event()
+        allow_first_wait = asyncio.Event()
         release = asyncio.Event()
 
         async def fake_browser(account_id):
@@ -280,9 +310,11 @@ def test_processing_limit_updates_immediately_and_waiting_jobs_stay_queued(tmp_p
             nonlocal active, maximum_active
             active += 1
             maximum_active = max(maximum_active, active)
-            if active >= 1:
+            if req.prompt == "limit task 1":
                 first_started.set()
-            if active >= 2:
+                await allow_first_wait.wait()
+                await on_status("generating", "等待视频生成")
+            else:
                 second_started.set()
             await release.wait()
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -310,7 +342,7 @@ def test_processing_limit_updates_immediately_and_waiting_jobs_stay_queued(tmp_p
             transport=httpx.ASGITransport(app=app), base_url="http://local"
         ) as client:
             assert (await client.get("/api/settings/processing-limit")).json() == {
-                "processing_limit": 0,
+                "processing_limit": 3,
                 "active_processing": 0,
             }
             limited = await client.put(
@@ -342,15 +374,35 @@ def test_processing_limit_updates_immediately_and_waiting_jobs_stay_queued(tmp_p
             )
             assert expanded.status_code == 200
             assert expanded.json()["processing_limit"] == 2
+            for _ in range(50):
+                limit_state = (
+                    await client.get("/api/settings/processing-limit")
+                ).json()
+                if limit_state["active_processing"] == 2:
+                    break
+                await asyncio.sleep(0.01)
+            assert limit_state["active_processing"] == 2
+
+            # The second task has a processing reservation but must remain queued
+            # until the first task reaches the video-wait state.
+            states = [
+                (await client.get(f"/api/v1/videos/generations/{job_id}")).json()["status"]
+                for job_id in job_ids
+            ]
+            assert states.count("opening") == 1
+            assert states.count("queued") == 4
+            assert not second_started.is_set()
+
+            allow_first_wait.set()
             await asyncio.wait_for(second_started.wait(), timeout=1)
             await asyncio.sleep(0.05)
             states = [
                 (await client.get(f"/api/v1/videos/generations/{job_id}")).json()["status"]
                 for job_id in job_ids
             ]
-            assert states.count("opening") == 2
+            assert states.count("generating") == 1
+            assert states.count("opening") == 1
             assert states.count("queued") == 3
-            assert maximum_active == 2
 
             release.set()
             for _ in range(100):
@@ -363,5 +415,157 @@ def test_processing_limit_updates_immediately_and_waiting_jobs_stay_queued(tmp_p
                 await asyncio.sleep(0.01)
             assert states == ["downloaded"] * 5
             assert maximum_active == 2
+
+    asyncio.run(run())
+
+
+def test_processing_slot_is_held_until_job_is_finished(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
+    dbfile = tmp_path / "processing-lifetime.sqlite"
+
+    def db():
+        conn = sqlite3.connect(dbfile)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    with db() as conn:
+        conn.executescript("""
+            CREATE TABLE accounts(
+                id TEXT PRIMARY KEY,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE jobs(
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                episode_id TEXT,
+                shot_id TEXT,
+                prompt TEXT,
+                account_id TEXT,
+                status TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                error_message TEXT DEFAULT '',
+                video_path TEXT
+            );
+        """)
+        conn.executemany(
+            "INSERT INTO accounts(id, archived, created_at) VALUES(?, 0, ?)",
+            [(f"account_{index}", f"2026-02-{index:02d}") for index in range(1, 3)],
+        )
+
+    def get_account(account_id):
+        with db() as conn:
+            return conn.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone()
+
+    def get_job(job_id):
+        with db() as conn:
+            return conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+
+    async def run():
+        app = FastAPI()
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        calls = []
+
+        async def fake_browser(account_id):
+            return account_id
+
+        async def fake_perform(context, req, assets, target, on_status, on_page_url, on_binding,
+                               on_manual_ready=None, confirmation_text="", close_on_success=False,
+                               on_review_page=None):
+            calls.append(req.prompt)
+            if req.prompt == "first":
+                first_started.set()
+                raise web_api.ReviewNeeded("LOGIN_REQUIRED", "需要人工登录")
+            second_started.set()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"second-video")
+            return {
+                "output": str(target),
+                "video_url": "https://example.com/second.mp4",
+                "web_page_url": "https://www.doubao.com/chat/second",
+            }
+
+        monkeypatch.setattr(web_api, "perform", fake_perform)
+        web_api.mount_video_api(
+            app,
+            db=db,
+            get_account=get_account,
+            get_job=get_job,
+            browser=fake_browser,
+            base_dir=tmp_path,
+            downloads_dir=tmp_path / "data" / "videos",
+            serialize=dict,
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://local"
+        ) as client:
+            await client.put(
+                "/api/settings/processing-limit", json={"processing_limit": 1}
+            )
+            first = await client.post("/api/v1/videos/generations", json={
+                "account_id": "account_1",
+                "prompt": "first",
+                "duration": 4,
+                "submit_mode": "manual",
+                "auto_start": True,
+            })
+            assert first.status_code == 202
+            first_id = first.json()["id"]
+
+            # Manual tasks intentionally ignore auto_start; an operator must launch
+            # the first task explicitly before it can occupy a processing slot.
+            started = await client.post(
+                f"/api/v1/videos/generations/{first_id}/start"
+            )
+            assert started.status_code == 200
+
+            await asyncio.wait_for(first_started.wait(), timeout=1)
+            for _ in range(100):
+                if (await client.get(
+                    f"/api/v1/videos/generations/{first_id}"
+                )).json()["status"] == "needs_review":
+                    break
+                await asyncio.sleep(0.01)
+            assert (await client.get(
+                f"/api/v1/videos/generations/{first_id}"
+            )).json()["status"] == "needs_review"
+
+            second = await client.post("/api/v1/videos/generations", json={
+                "account_id": "account_2",
+                "prompt": "second",
+                "duration": 4,
+                "auto_start": True,
+            })
+            assert second.status_code == 202
+            second_id = second.json()["id"]
+            await asyncio.sleep(0.05)
+            assert (await client.get(
+                f"/api/v1/videos/generations/{second_id}"
+            )).json()["status"] == "queued"
+            assert not second_started.is_set()
+            assert calls == ["first"]
+            assert (await client.get("/api/settings/processing-limit")).json()[
+                "active_processing"
+            ] == 1
+
+            marked = await client.post(
+                f"/api/v1/videos/generations/{first_id}/mark-failed?confirm_failed=true"
+            )
+            assert marked.status_code == 200
+            await asyncio.wait_for(second_started.wait(), timeout=1)
+            for _ in range(100):
+                if (await client.get(
+                    f"/api/v1/videos/generations/{second_id}"
+                )).json()["status"] == "downloaded":
+                    break
+                await asyncio.sleep(0.01)
+            assert (await client.get(
+                f"/api/v1/videos/generations/{second_id}"
+            )).json()["status"] == "downloaded"
+            assert calls == ["first", "second"]
 
     asyncio.run(run())

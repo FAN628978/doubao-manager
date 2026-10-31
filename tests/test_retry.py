@@ -297,6 +297,7 @@ def test_copy_recreates_initial_server_submission_as_queued_job(tmp_path, monkey
 
 def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
+    monkeypatch.setenv("DOUBAO_BROWSER_IDLE_CLOSE_SECONDS", "0")
     monkeypatch.setattr(application, "DB_PATH", tmp_path / "auto-push.sqlite3")
     application.init_db()
     web_api.recover_interrupted_jobs(application.db)
@@ -410,9 +411,13 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
         assert state["web"]["result_pushed_at"]
         assert confirmation_texts == [default_confirmation]
         assert close_flags == [True]
+        for _ in range(50):
+            if closed_accounts:
+                break
+            time.sleep(0.01)
         assert closed_accounts == ["account_1"]
         events = client.get(f"/api/v1/videos/generations/{job_id}/events").json()
-        assert any("额度已核对：剩余 26 秒 / 30 秒；账号 Chrome 已自动关闭" in event["message"]
+        assert any("账号浏览器已空闲关闭" in event["message"]
                    for event in events)
         assert pushed == [{
             "url": push_url,
@@ -442,10 +447,13 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
                 break
             time.sleep(0.01)
 
-        assert copied_state["status"] == "needs_review", copied_state
+        assert copied_state["status"] == "downloaded", copied_state
         assert copied_state["account_id"] == "account_2"
         assert copied_state["video_path"]
-        assert copied_state["web"]["error_code"] == "RESULT_PUSH_FAILED"
+        assert copied_state["web"]["error_code"] == ""
+        assert copied_state["web"]["delivery_state"] == "failed"
+        assert copied_state["web"]["delivery_attempts"] == 1
+        assert copied_state["web"]["delivery_next_retry_at"]
         assert confirmation_texts == [default_confirmation, default_confirmation]
         assert close_flags == [True, True]
         assert closed_accounts == ["account_1", "account_2"]
@@ -458,6 +466,9 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
         recovered = client.get(f"/api/v1/videos/generations/{copied_id}").json()
         assert recovered["status"] == "downloaded"
         assert recovered["web"]["error_code"] == ""
+        assert recovered["web"]["delivery_state"] == "delivered"
+        assert recovered["web"]["delivery_attempts"] == 2
+        assert recovered["web"]["delivery_next_retry_at"] == ""
         assert len(pushed) == 3
 
         setting = client.put(

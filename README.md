@@ -17,15 +17,17 @@
 | 模型选择 | 下拉菜单按模型名精确匹配选中 | — | **Seedance 2.0 Fast 选择已实测** |
 | 防重复与安全恢复 | 数据库幂等键、原子认领、同账号单任务槽、重启转人工 | 本地 API/断点测试通过 | 待验收 |
 
-**关键限制：** 当前页面控件已按 2026-10-28 的豆包 DOM 适配；页面改版后仍可能需要调整 `web_api.py` 的选项、上传、输入框和提交按钮选择器。文生视频、首帧/首尾帧、多张参考图的出片仍待实机验收。
+**关键限制：** 当前页面控件已按 2026-10-28 的豆包 DOM 适配；页面改版后仍可能需要调整 `doubao_manager/web/automation.py` 的选项、上传、输入框和提交按钮选择器。文生视频、首帧/首尾帧、多张参考图的出片仍待实机验收。
 
 **账号每日视频额度：** 每个账号每天 30 秒（按本地自然日归零，可用环境变量 `DOUBAO_DAILY_VIDEO_SECONDS` 覆盖）。任务创建时按 `duration` 占用额度，出片归档后记为已消耗；`needs_review`/`failed` 释放占用。提交任务时 `account_id` 留空则自动选择当日剩余额度足够的账号（优先空闲账号），额度不足会返回 409 而非硬凑。额度信息在「账号管理」列表、`GET /api/accounts/{id}/quota`、任务详情 `quota` 字段中可见。
 
-**账号会员与优先级：** 账号管理中可标记会员账号并设置 `0～1000` 的优先级，数字越大越优先。自动选择账号时依次考虑重试避让、账号是否空闲、账号优先级和剩余额度。会员账号创建或启动视频任务时固定使用 `Seedance 2.0`，调用方传入的 `model` 参数会被忽略。
+**账号会员与优先级：** 账号管理中可标记会员账号并设置 `0～1000` 的优先级。自动选号优先避开重试原账号，再选择扣除本次任务时长后剩余额度最少的可用账号，以减少额度碎片；额度适配相同时优先空闲账号，再按优先级和档案顺序选择。会员账号创建或启动视频任务时固定使用 `Seedance 2.0`，调用方传入的 `model` 参数会被忽略。
 
 **暂停账号：** 账号管理中的“暂停使用”会让该账号退出新任务的自动选择，并拒绝用它新建、启动或人工发送生成任务；已经运行的任务不会被中断。暂停期间仍可打开浏览器维护登录状态或查看历史结果，点击“恢复使用”即可重新启用。
 
-**并发执行：** 不同账号使用隔离的 Chrome 档案并行执行，同一账号内的任务保持串行，避免页面互相干扰。默认不限制同时运行的账号数；如需限制浏览器资源占用，可将环境变量 `DOUBAO_MAX_CONCURRENT_ACCOUNTS` 设置为正整数。
+**执行与队列：** 自动任务始终逐个执行，一个任务进入等待视频后，下一个任务立即开始准备和提交。`正在处理队列上限` 独立限制“正在处理”中最多容纳多少任务，默认 3；可将环境变量 `DOUBAO_MAX_CONCURRENT_ACCOUNTS` 设置为其他正整数，设为 `0` 表示不限制。任务完成或判定失败后才释放队列名额。
+
+**执行流程：** 轮询间隔按约 1 / 2 / 4 / 8 秒自适应；账号无等待任务且无人工准备页面时，浏览器空闲 30 秒后关闭。自动步骤默认不加随机延迟，可通过 `DOUBAO_STEP_DELAY_SECONDS`（或 `DOUBAO_STEP_DELAY_MIN_SECONDS` / `DOUBAO_STEP_DELAY_MAX_SECONDS`）开启。执行心跳默认每 15 秒写入一次，可用 `DOUBAO_HEARTBEAT_SECONDS` 调整。
 
 ## 安装与启动（Windows 10/11）
 
@@ -259,7 +261,7 @@ Host lzg
 
 - `queued` 任务可主动启动；其他状态不得重复启动。
 - 成功点击“生成”但无法确认提交时，任务转 `needs_review`。这时需要人工核对官网历史记录，避免双重计费。
-- 重新启动服务时，`opening` / `configuring` / `uploading` / `submitting` / `generating` / `downloading` 任务会保守转 `needs_review`，不重发。
+- 重新启动服务时，若已有有效归档视频则恢复为 `downloaded`；其余未完成任务保守转 `needs_review`，不重发。H3 推送失败只记录 `delivery_state=failed` 和下次建议重试时间，不会把已归档视频改回 `needs_review`。
 - 页面如果要求登录、验证码、额度、会员、风控确认，会停止执行并等待用户处理。
 - 下载源必须是允许的 HTTPS 视频 CDN 域名；未知域名/重定向拒绝自动访问；仅接受 MP4/WEBM，并在系统有 ffprobe 时校验包含视频流。
 - `data/` 有浏览器登录态、素材、私人媒体与数据库。绝不可提交到 Git、发给他人或公开共享。
@@ -272,8 +274,17 @@ Host lzg
 
 ```text
 app.py                       # FastAPI 管理服务、账号、分镜、手工导入
-web_api.py                   # 网页生成四模式执行器、状态机与防误报
+web_api.py                   # 兼容门面：保留旧导入、测试 monkeypatch 和调用入口
+doubao_manager/web/config.py # 环境参数、选择器与运行常量
+doubao_manager/web/models.py # API 请求模型与业务异常
+doubao_manager/web/utils.py  # 时间、路径、轮询和步骤延迟工具
+doubao_manager/web/quota.py  # 额度占用、结算与启动恢复
+doubao_manager/web/schema.py # Web 任务表、迁移与投递索引
+doubao_manager/web/automation.py # 豆包页面自动化、下载与校验
+doubao_manager/web/api.py    # FastAPI 路由、任务编排、回推与事件
 static/index.html            # Windows 本地管理台前端（网页应用）
+static/styles.css            # 管理台样式
+static/app.js                # 管理台交互逻辑
 scripts/live_acceptance.py   # 在 Windows 已登录浏览器上做真实出片验收
 selftest.bat                 # 离线自动化回归测试
 test-live.bat                # 实机验收入口

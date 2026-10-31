@@ -163,7 +163,11 @@ def test_current_composer_video_chip_confirms_mode():
         async with async_playwright() as pw:
             browser = await launch_chromium(pw)
             page = await browser.new_page()
-            await page.set_content('<div role="button" style="position:fixed;left:400px;bottom:20px"><span>视频生成</span></div>')
+            await page.set_content('''
+              <div role="button" style="position:fixed;left:400px;bottom:20px"
+                   onclick="document.body.insertAdjacentHTML('beforeend', '<div data-input-engine-actionbar-render-entry-key=\\'video-generation-params-panel\\'>自动 · 10s</div>')">
+                <span>视频生成</span>
+              </div>''')
             await set_ui_option(page, 'mode', 'reference_images')
             await browser.close()
     asyncio.run(run())
