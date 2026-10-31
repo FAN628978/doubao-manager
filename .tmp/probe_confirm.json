@@ -1,0 +1,140 @@
+{
+  "url": "https://www.doubao.com/chat/38449877226316290",
+  "messageCount": 1,
+  "lastMessage": {
+    "text": "我将为你生成一条雨后城楼氛围短片，重点呈现云雾流动与夕阳暖光下的缓慢推进镜头。 视频生成参数确认 模型： Seedance 2.0 Mini 时长： 4 秒 比例： 16:9 横屏 画面： 电影级 3D 半写实国漫，雨后城楼远景，云雾缓慢流动，摄影机平稳缓慢推进，暖色夕阳光 清晰度： 720p 观感 声音： 无台词，以低沉氛围音乐与雨后轻风环境声为主 画面文字： 不显示字幕或其他文字 确认后我再开始生成视频。 今天 10:50",
+    "buttons": [
+      {
+        "tag": "DIV",
+        "text": "我将为你生成一条雨后城楼氛围短片，重点呈现云雾流",
+        "aria": "",
+        "testid": "message_content",
+        "disabled": false,
+        "cls": "relative grid w-full grid-cols-[minmax(0,1fr)_auto]"
+      },
+      {
+        "tag": "DIV",
+        "text": "我将为你生成一条雨后城楼氛围短片，重点呈现云雾流",
+        "aria": "",
+        "testid": "message_text_content",
+        "disabled": false,
+        "cls": "container-qX9Csx md-box-root"
+      },
+      {
+        "tag": "DIV",
+        "text": "今天 10:50",
+        "aria": "",
+        "testid": "message_action_bar",
+        "disabled": false,
+        "cls": "flex flex-col justify-end h-48 py-12 w-full select-none opac"
+      },
+      {
+        "tag": "BUTTON",
+        "text": "",
+        "aria": "",
+        "testid": "message_action_copy",
+        "disabled": false,
+        "cls": "flex shrink-0 items-center justify-center font-[400] whitesp"
+      },
+      {
+        "tag": "BUTTON",
+        "text": "",
+        "aria": "朗读",
+        "testid": "audio_play_button",
+        "disabled": false,
+        "cls": "flex shrink-0 items-center justify-center font-[400] whitesp"
+      },
+      {
+        "tag": "BUTTON",
+        "text": "",
+        "aria": "",
+        "testid": "message_action_like",
+        "disabled": false,
+        "cls": "flex shrink-0 items-center justify-center font-[400] whitesp"
+      },
+      {
+        "tag": "BUTTON",
+        "text": "",
+        "aria": "",
+        "testid": "message_action_dislike",
+        "disabled": false,
+        "cls": "flex shrink-0 items-center justify-center font-[400] whitesp"
+      },
+      {
+        "tag": "BUTTON",
+        "text": "",
+        "aria": "",
+        "testid": "message_action_conversation_fork",
+        "disabled": false,
+        "cls": "flex shrink-0 items-center justify-center font-[400] whitesp"
+      },
+      {
+        "tag": "BUTTON",
+        "text": "",
+        "aria": "",
+        "testid": "message_action_share",
+        "disabled": false,
+        "cls": "flex shrink-0 items-center justify-center font-[400] whitesp"
+      },
+      {
+        "tag": "svg",
+        "text": "",
+        "aria": "",
+        "testid": "message_action_icon_share",
+        "disabled": false,
+        "cls": "[object SVGAnimatedString]"
+      },
+      {
+        "tag": "BUTTON",
+        "text": "",
+        "aria": "",
+        "testid": "message_action_regenerate",
+        "disabled": false,
+        "cls": "flex shrink-0 items-center justify-center font-[400] whitesp"
+      },
+      {
+        "tag": "BUTTON",
+        "text": "",
+        "aria": "",
+        "testid": "message_action_more",
+        "disabled": false,
+        "cls": "flex shrink-0 items-center justify-center font-[400] whitesp"
+      }
+    ],
+    "htmlHead": "<div class=\"flex flex-col flex-grow max-w-full min-w-0\"><div data-testid=\"message_content\" data-message-id=\"59961180341933058\" class=\"relative grid w-full grid-cols-[minmax(0,1fr)_auto]\"><div class=\"relative z-0 max-w-full min-w-0\"><div data-container-type=\"block-v2\" class=\"flex w-full flex-col blockLayout-GgvoM6 spacing16-ExSgDz [&amp;&gt;div:not(:has(&gt;_*))]:-mt-16\"><div class=\"\" data-render-engine=\"node\" data-plugin-identifier=\"block_type:10000\" data-block-id=\"40497986087385346\"><span hidden=\"\" aria-hidden=\"true\"></span><div class=\"container-h3Yzeb\"><div data-testid=\"message_text_content\" data-streaming=\"false\" class=\"container-qX9Csx md-box-root\" style=\"--md-box-color-fg: rgba(0, 0, 0, 1.0); --md-box-color-fg-muted: rgba(0, 0, 0, 0.55); --md-box-color-bg: #ffffff; --md-box-color-border: rgba(28, 31, 35, 0.08); --md-box-color-accent: #0057ff; --md-box-color-accent-hover: #004ad9; --"
+  },
+  "composer": {
+    "present": true,
+    "htmlHead": "<div class=\"guidance-input-surface relative flex flex-col max-h-(--input-guidance-input-container-max-height,unset) rounded-[inherit] border-(--input-guidance-input-container-border) bg-(--input-guidance-input-container-background)\"><div class=\"relative\"><input data-testid=\"\" class=\"hidden\" multiple=\"\" type=\"file\" accept=\".pdf,.txt,.csv,.docx,.doc,.xlsx,.xls,.pptx,.ppt,.md,.mobi,.epub,.png,.jpeg,.jpg,.webp,.mp3,.wav,.m4a,.wma,.aac,.ogg,.amr,.flac,.aiff,.ac3\"><div class=\"pointer-events-none absol"
+  },
+  "editables": [
+    {
+      "tag": "DIV",
+      "ce": "true",
+      "cls": "tiptap ProseMirror ProseMirror-focused",
+      "testid": "",
+      "insideComposer": true,
+      "visible": true
+    }
+  ],
+  "sends": [
+    {
+      "tag": "DIV",
+      "text": "生成视频：电影级 3D 半写实国漫，雨后城楼远景",
+      "aria": "",
+      "testid": "send_message",
+      "disabled": false,
+      "cls": "flex flex-row w-full justify-end w-full max-w-full s-font-ba",
+      "insideComposer": false
+    },
+    {
+      "tag": "BUTTON",
+      "text": "",
+      "aria": "",
+      "testid": "chat_input_send_button",
+      "disabled": false,
+      "cls": "shrink-0 font-[400] whitespace-nowrap ring-dbx-fill-highligh",
+      "insideComposer": true
+    }
+  ]
+}

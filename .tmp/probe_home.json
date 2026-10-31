@@ -1,0 +1,323 @@
+{
+  "before": {
+    "url": "https://www.doubao.com/chat/",
+    "skillButtons": [
+      {
+        "testid": "skill_bar_button_17",
+        "text": "视频生成",
+        "visible": true,
+        "aria": ""
+      },
+      {
+        "testid": "skill_bar_button_2",
+        "text": "帮我写作",
+        "visible": true,
+        "aria": ""
+      },
+      {
+        "testid": "skill_bar_button_5000",
+        "text": "PPT 生成",
+        "visible": true,
+        "aria": ""
+      },
+      {
+        "testid": "skill_bar_button_3",
+        "text": "图像生成",
+        "visible": true,
+        "aria": ""
+      },
+      {
+        "testid": "skill_bar_button_1005",
+        "text": "录音转写",
+        "visible": true,
+        "aria": ""
+      },
+      {
+        "testid": "skill_bar_button_5003",
+        "text": "AI 表格",
+        "visible": true,
+        "aria": ""
+      }
+    ],
+    "modeish": [
+      {
+        "tag": "DIV",
+        "testid": "chat-route-layout",
+        "text": "豆包\n新工作任务\nCtrl J\n新对话\nCtrl",
+        "visible": true
+      },
+      {
+        "tag": "NAV",
+        "testid": "chat_route_layout_leftside_nav",
+        "text": "豆包\n新工作任务\nCtrl J\n新对话\nCtrl",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "flow_chat_sidebar",
+        "text": "豆包\n新工作任务\nCtrl J\n新对话\nCtrl",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "chat_list_wrapper",
+        "text": "项目\n创建新项目\n最近\n电影级3D国漫雨后城楼视",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "conversation-list-v2-project",
+        "text": "项目\n创建新项目\n最近\n电影级3D国漫雨后城楼视",
+        "visible": true
+      },
+      {
+        "tag": "SECTION",
+        "testid": "conversation-section",
+        "text": "最近\n电影级3D国漫雨后城楼视频生成\n新对话\n主",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "conversation-list-v2-item",
+        "text": "电影级3D国漫雨后城楼视频生成",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "conversation-list-v2-item",
+        "text": "《快乐无罪，空洞有罪》视频生成提示词",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "flow_chat_guidance_page",
+        "text": "有什么我能帮你的吗？\n对话\n工作\n为你推荐\n资讯",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "chat_input",
+        "text": "对话\n视频生成\n帮我写作\nPPT 生成\n图像生成",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "guidance-skill-bar",
+        "text": "视频生成\n帮我写作\nPPT 生成\n图像生成\n录音",
+        "visible": true
+      },
+      {
+        "tag": "BUTTON",
+        "testid": "skill_bar_button_17",
+        "text": "视频生成",
+        "visible": true
+      }
+    ],
+    "paramsPanel": null,
+    "composer": {
+      "visible": true,
+      "hasEditable": true,
+      "actions": [
+        "",
+        "upload_file_button",
+        "chat_input_action_mode",
+        "guidance-skill-bar",
+        "skill_bar_button_17",
+        "skill_bar_button_2",
+        "skill_bar_button_5000",
+        "skill_bar_button_3",
+        "skill_bar_button_1005",
+        "skill_bar_button_5003",
+        "chat_input_action_model",
+        "chat_input_input"
+      ]
+    },
+    "testids": [
+      "ai_space_nav_button",
+      "app-open-api-service",
+      "chat-route-layout",
+      "chat_header_avatar_button",
+      "chat_input",
+      "chat_input_action_mode",
+      "chat_input_action_model",
+      "chat_input_input",
+      "chat_item_dropdown_entry",
+      "chat_list_item_more_button",
+      "chat_list_wrapper",
+      "chat_route_layout_left_sash",
+      "chat_route_layout_leftside_nav",
+      "conversation-list-v2-group-menu-trigger",
+      "conversation-list-v2-item",
+      "conversation-list-v2-item-hide",
+      "conversation-list-v2-project",
+      "conversation-list-v2-project-create-menu-trigger",
+      "conversation-list-v2-project-empty-create-blank",
+      "conversation-list-v2-project-empty-state",
+      "conversation-list-v2-project-list-entry",
+      "conversation-mode-switch",
+      "conversation-section",
+      "conversation_header_more_button",
+      "create_conversation_button",
+      "create_office_task_button",
+      "cron-jobs-sidebar-entry",
+      "file_drop_area",
+      "flow_chat_guidance_page",
+      "flow_chat_sidebar",
+      "global-search-icon-entry",
+      "guidance-skill-bar",
+      "guidance_page_bottom_height",
+      "office-sug-preview-direct",
+      "project-grouped-section",
+      "samantha_layout_right_side",
+      "sidebar-skills",
+      "sidebar_footer_setting_entry",
+      "sidebar_skills_nav_button",
+      "siderbar_close_btn",
+      "skill-page-item-more",
+      "skill_bar_button_1005",
+      "skill_bar_button_17",
+      "skill_bar_button_2",
+      "skill_bar_button_3",
+      "skill_bar_button_5000",
+      "skill_bar_button_5003",
+      "upload_file_button",
+      "workspace-switch-chip"
+    ],
+    "bodyHead": "豆包\n新工作任务\nCtrl J\n新对话\nCtrl Shift K\n定时任务\nCtrl Shift T\n插件 · 技能 · 伙伴\nCtrl Shift S\n云盘\nCtrl Shift D\nAPI 服务\n更多\n项目\n创建新项目\n最近\n电影级3D国漫雨后城楼视频生成\n新对话\n主对话\nlkh3是什么\n基地生物研究故事\n爆款剧本第一集\n视频开篇钩子设计\n书籍取名\n漫剧风格\n3D现代写实动漫渲染\n生成15秒视频所需时间\n3D国漫《厉总，夫人她又在装穷》8秒悬疑片段分镜（Minimax H3版）\n外星人AI短剧暗讽社会\n《快乐无罪，空洞有罪》视频生成提示词\n外星执法官刷爽剧分镜提示词\nAI漫剧第二集剧本（高燃吸睛）\n取名\n推荐小说\n银行分红率查询\n提取文字\n沟通与和解\n三次出差报销金额计算\n餐饮业三方合伙经营协议内容总结\n分层结构与模块数据提取\n具有Agent能力的无人机在电子商务中的应用研究\n无人机数字孪生PPT内容优化\n制作汇报PPT\n面向无人机采集目标信息建模的数字孪生科学问题、技术问题与工程问题研究\n开放课题申请书撰写\n自然语言驱动的测试数据分析智能体研究\n&&&\n有什么我能帮你的吗？\n对话"
+  },
+  "clicked": true,
+  "after": {
+    "url": "https://www.doubao.com/chat/",
+    "skillButtons": [],
+    "modeish": [
+      {
+        "tag": "DIV",
+        "testid": "chat-route-layout",
+        "text": "豆包\n新工作任务\nCtrl J\n新对话\nCtrl",
+        "visible": true
+      },
+      {
+        "tag": "NAV",
+        "testid": "chat_route_layout_leftside_nav",
+        "text": "豆包\n新工作任务\nCtrl J\n新对话\nCtrl",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "flow_chat_sidebar",
+        "text": "豆包\n新工作任务\nCtrl J\n新对话\nCtrl",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "chat_list_wrapper",
+        "text": "项目\n创建新项目\n最近\n电影级3D国漫雨后城楼视",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "conversation-list-v2-project",
+        "text": "项目\n创建新项目\n最近\n电影级3D国漫雨后城楼视",
+        "visible": true
+      },
+      {
+        "tag": "SECTION",
+        "testid": "conversation-section",
+        "text": "最近\n电影级3D国漫雨后城楼视频生成\n新对话\n主",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "conversation-list-v2-item",
+        "text": "电影级3D国漫雨后城楼视频生成",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "conversation-list-v2-item",
+        "text": "《快乐无罪，空洞有罪》视频生成提示词",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "flow_chat_guidance_page",
+        "text": "视频生成\n模型\nSeedance 2.0 Min",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "chat_input",
+        "text": "视频生成\n模型\nSeedance 2.0 Min",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "skill_input_exit_button",
+        "text": "视频生成",
+        "visible": true
+      },
+      {
+        "tag": "DIV",
+        "testid": "skill_input_exit_button",
+        "text": "视频生成",
+        "visible": true
+      }
+    ],
+    "paramsPanel": {
+      "visible": true,
+      "text": "自动 · 10s"
+    },
+    "composer": {
+      "visible": true,
+      "hasEditable": true,
+      "actions": [
+        "upload-file-input",
+        "skill_input_exit_button",
+        "skill_input_exit_button",
+        "chat_input_input"
+      ]
+    },
+    "testids": [
+      "ai_space_nav_button",
+      "app-open-api-service",
+      "chat-route-layout",
+      "chat_header_avatar_button",
+      "chat_input",
+      "chat_input_input",
+      "chat_item_dropdown_entry",
+      "chat_list_item_more_button",
+      "chat_list_wrapper",
+      "chat_route_layout_left_sash",
+      "chat_route_layout_leftside_nav",
+      "conversation-list-v2-group-menu-trigger",
+      "conversation-list-v2-item",
+      "conversation-list-v2-item-hide",
+      "conversation-list-v2-project",
+      "conversation-list-v2-project-create-menu-trigger",
+      "conversation-list-v2-project-empty-create-blank",
+      "conversation-list-v2-project-empty-state",
+      "conversation-list-v2-project-list-entry",
+      "conversation-section",
+      "conversation_header_more_button",
+      "create_conversation_button",
+      "create_office_task_button",
+      "cron-jobs-sidebar-entry",
+      "file_drop_area",
+      "flow_chat_guidance_page",
+      "flow_chat_sidebar",
+      "global-search-icon-entry",
+      "guidance_page_bottom_height",
+      "project-grouped-section",
+      "samantha_layout_right_side",
+      "sidebar-skills",
+      "sidebar_footer_setting_entry",
+      "sidebar_skills_nav_button",
+      "siderbar_close_btn",
+      "skill-page-item-more",
+      "skill_input_exit_button",
+      "upload-file-input",
+      "workspace-switch-chip"
+    ],
+    "bodyHead": "豆包\n新工作任务\nCtrl J\n新对话\nCtrl Shift K\n定时任务\nCtrl Shift T\n插件 · 技能 · 伙伴\nCtrl Shift S\n云盘\nCtrl Shift D\nAPI 服务\n更多\n项目\n创建新项目\n最近\n电影级3D国漫雨后城楼视频生成\n新对话\n主对话\nlkh3是什么\n基地生物研究故事\n爆款剧本第一集\n视频开篇钩子设计\n书籍取名\n漫剧风格\n3D现代写实动漫渲染\n生成15秒视频所需时间\n3D国漫《厉总，夫人她又在装穷》8秒悬疑片段分镜（Minimax H3版）\n外星人AI短剧暗讽社会\n《快乐无罪，空洞有罪》视频生成提示词\n外星执法官刷爽剧分镜提示词\nAI漫剧第二集剧本（高燃吸睛）\n取名\n推荐小说\n银行分红率查询\n提取文字\n沟通与和解\n三次出差报销金额计算\n餐饮业三方合伙经营协议内容总结\n分层结构与模块数据提取\n具有Agent能力的无人机在电子商务中的应用研究\n无人机数字孪生PPT内容优化\n制作汇报PPT\n面向无人机采集目标信息建模的数字孪生科学问题、技术问题与工程问题研究\n开放课题申请书撰写\n自然语言驱动的测试数据分析智能体研究\n&&&\n视频生成\n模型\nSeeda"
+  }
+}

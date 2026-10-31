@@ -1,0 +1,22 @@
+初始 panel: None
+
+STEP A_mode
+  -> OK
+  panel: 自动 · 10s
+
+STEP B_ratio
+  -> OK
+  panel: 16:9 · 10s
+
+STEP C_duration9
+  -> OK
+  panel: 16:9 · 9s
+
+STEP D_model
+  -> OK
+  panel: 16:9 · 9s
+
+FINAL panel: 16:9 · 9s
+composer: 视频生成 | 模型 | Seedance 2.0 Fast | 16:9 · 9s |  |  | 
+
+浏览器已关闭（未提交）

@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.DS_Store
+# Local account profiles, browser cookies, downloaded videos, and database are sensitive.
+data/
+.pytest_cache/
+.build-venv/
+build/
+dist/
+*.spec

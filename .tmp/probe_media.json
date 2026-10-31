@@ -1,0 +1,487 @@
+{
+  "url": "https://www.doubao.com/chat/38449775784713730",
+  "before": {
+    "cardCount": 1,
+    "cardClass": "block-video-MzfWVN video-hover-button-group-container-mh06XY",
+    "inner": [
+      {
+        "tag": "DIV",
+        "cls": "play-icon-wrapper-wkMy04",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "video-hover-button-group-q8qlu7",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "hover-mask-NdO4I4",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      }
+    ],
+    "parentInner": [
+      {
+        "tag": "DIV",
+        "cls": "block-video-MzfWVN video-hover-button-group-container-mh06XY",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "play-icon-wrapper-wkMy04",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "video-hover-button-group-q8qlu7",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "hover-mask-NdO4I4",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      }
+    ],
+    "outerHead": "<div class=\"block-video-MzfWVN video-hover-button-group-container-mh06XY\" style=\"padding-top: 56.25%;\"><img src=\"https://aka.doubaocdn.com/s/xrb0U8fk7m\" class=\"cover-u1rIsU\"><div class=\"video-player-wrapper-IZ7Zoq\"><div class=\"video-player-NmhH16\"></div></div><div data-video-conner-tag=\"true\" class=\"play-icon-wrapper-wkMy04\" style=\"--video-conner-tag-gap: 6px; --video-conner-tag-size: 16px;\"><svg width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"currentColor\" xmlns=\"http://www.w3.org/2000/svg\" class=\"play-icon-gWzeeV\"><path d=\"M16.8 7.84241C19.1628 9.20656 20.3442 9.88864 20.7406 10.7791C21.0865 11.5558 21.0865 12.4428 20.7406 13.2195C20.3442 14.11 19.1628 14.7921 16.8 16.1563L11.4187 19.2631C9.05597 20.6273 7.87458 21.3093 6.90516 21.2075C6.0596 21.1186 5.29145 20.6751 4.7917 19.9872C4.21875 19.1986 4.21875 17.8345 4.21875 15.1062L4.21875 8.89246C4.21875 6.16416 4.21875 4.80002 4.7917 4.01142C5.29145 3.32357 6.0596 2.88008 6.90516 2.79121C7.87458 2.68932 9.05597 3.37139 11.4188 4.73554L16.8 7.84241Z\" fill=\"currentColor\"></path></svg></div><div class=\"video-hover-button-group-q8qlu7\"><div class=\"mask-XCRBOP\"></div><div class=\"hover-mask-NdO4I4\"><div class=\"container-DJBOvO\"><div dat"
+  },
+  "hovered": true,
+  "afterHover": {
+    "cardCount": 1,
+    "cardClass": "block-video-MzfWVN video-hover-button-group-container-mh06XY",
+    "inner": [
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "xgplayer-icon",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "XG-PROGRESS-BTN",
+        "cls": "xgplayer-progress-btn",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "xgplayer-icon",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "xgplayer-icon",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "XG-ICON",
+        "cls": "xg-options-icon xgplayer-definition",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "xgplayer-icon btn-text",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "SPAN",
+        "cls": "icon-text",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "mini-cancel-btn",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "play-icon",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "play-icon-wrapper-wkMy04",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "video-hover-button-group-q8qlu7",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "hover-mask-NdO4I4",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      }
+    ],
+    "parentInner": [
+      {
+        "tag": "DIV",
+        "cls": "block-video-MzfWVN video-hover-button-group-container-mh06XY",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "xgplayer-icon",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "XG-PROGRESS-BTN",
+        "cls": "xgplayer-progress-btn",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "xgplayer-icon",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "xgplayer-icon",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "XG-ICON",
+        "cls": "xg-options-icon xgplayer-definition",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "xgplayer-icon btn-text",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "SPAN",
+        "cls": "icon-text",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "mini-cancel-btn",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "play-icon",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "play-icon-wrapper-wkMy04",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "video-hover-button-group-q8qlu7",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "DIV",
+        "cls": "hover-mask-NdO4I4",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      },
+      {
+        "tag": "svg",
+        "cls": "[object SVGAnimatedString]",
+        "text": "",
+        "aria": "",
+        "testid": "",
+        "src": ""
+      }
+    ],
+    "outerHead": "<div class=\"block-video-MzfWVN video-hover-button-group-container-mh06XY\" style=\"padding-top: 56.25%;\"><img src=\"https://aka.doubaocdn.com/s/xrb0U8fk7m\" class=\"cover-u1rIsU cover-hidden-fCISeD\"><div class=\"video-player-wrapper-IZ7Zoq video-visible-quXeLp\"><div class=\"video-player-NmhH16 xgplayer xgplayer-pc xgplayer-playing xgplayer-pause\" data-xgplayerid=\"493a59cc-fc93-4a6f-ac6c-58431f73ff2d\" style=\"width: 100%; height: 100%;\"><video class=\"\" playsinline=\"true\" x5-playsinline=\"true\" webkit-playsinline=\"true\" mediatype=\"video\" data-index=\"-1\" loop=\"loop\" data-xgplayerid=\"493a59cc-fc93-4a6f-ac6c-58431f73ff2d\" style=\"width: 474px; height: 267px; transform: scale(1) translate(0%, 0%) rotate(0deg);\"><source class=\"\" src=\"https://v26-vdl.doubao.com/6294cc23a125c7c91b599006dcb9549d/7dad5929/video/tos/cn/tos-cn-v-9ecd54/oYpbEeQgDDRtG7Vr3IxoK4oQzXaeABCIkgCq5C/?a=482431&amp;ch=0&amp;cr=8&amp;dr=0&amp;er=0&amp;lr=video_gen_watermark_dyn&amp;cd=0%7C0%7C0%7C3&amp;cv=1&amp;br=1141&amp;bt=1141&amp;cs=0&amp;ds=3&amp;ft=GX5HJ~te.yygZmo0P8j6cgkVQ9w6x&amp;mime_type=video_mp4&amp;qs=0&amp;rc=Z2Q2NzU5OjxlNGlmMzU2Z0Bpam5xZDhvOnlvZTczNGY5M0BiNTUuNmAuNWAxXl4vMzNjYSMuMS5iYWFeX2RhLS1kNjBzcw%3D%3D&amp;btag="
+  },
+  "openedVia": "click-card",
+  "videos": [
+    {
+      "currentSrc": "https://v26-vdl.doubao.com/6294cc23a125c7c91b599006dcb9549d/7dad5929/video/tos/cn/tos-cn-v-9ecd54/oYpbEeQgDDRtG7Vr3IxoK4oQzXaeABCIkgCq5C/?a=482431&ch=0&cr=8&dr=0&er=0&lr=video_gen_watermark_dyn&cd=0%7C0%7C0%7C3&cv=1&br=1141&bt=1141&cs=0&ds=3&ft=GX5HJ~te.yygZmo0P8j6cgkVQ9w6x&mime_type=video_mp4&qs=0&rc=Z2Q2NzU5OjxlNGlmMzU2Z0Bpam5xZDhvOnlvZTczNGY5M0BiNTUuNmAuNWAxXl4vMzNjYSMuMS5iYWFeX2RhLS1kNjBzcw%3D",
+      "src": "",
+      "child": "https://v26-vdl.doubao.com/6294cc23a125c7c91b599006dcb9549d/7dad5929/video/tos/cn/tos-cn-v-9ecd54/oYpbEeQgDDRtG7Vr3IxoK4oQzXaeABCIkgCq5C/?a=482431&ch=0&cr=8&dr=0&er=0&lr=video_gen_watermark_dyn&cd=0%7C0%7C0%7C3&cv=1&br=1141&bt=1141&cs=0&ds=3&ft=GX5HJ~te.yygZmo0P8j6cgkVQ9w6x&mime_type=video_mp4&qs=0&rc=Z2Q2NzU5OjxlNGlmMzU2Z0Bpam5xZDhvOnlvZTczNGY5M0BiNTUuNmAuNWAxXl4vMzNjYSMuMS5iYWFeX2RhLS1kNjBzcw%3D",
+      "w": 1280,
+      "h": 720,
+      "dur": 10.08,
+      "readyState": 4
+    },
+    {
+      "currentSrc": "https://v26-vdl.doubao.com/6294cc23a125c7c91b599006dcb9549d/7dad5929/video/tos/cn/tos-cn-v-9ecd54/oYpbEeQgDDRtG7Vr3IxoK4oQzXaeABCIkgCq5C/?a=482431&ch=0&cr=8&dr=0&er=0&lr=video_gen_watermark_dyn&cd=0%7C0%7C0%7C3&cv=1&br=1141&bt=1141&cs=0&ds=3&ft=GX5HJ~te.yygZmo0P8j6cgkVQ9w6x&mime_type=video_mp4&qs=0&rc=Z2Q2NzU5OjxlNGlmMzU2Z0Bpam5xZDhvOnlvZTczNGY5M0BiNTUuNmAuNWAxXl4vMzNjYSMuMS5iYWFeX2RhLS1kNjBzcw%3D",
+      "src": "",
+      "child": "https://v26-vdl.doubao.com/6294cc23a125c7c91b599006dcb9549d/7dad5929/video/tos/cn/tos-cn-v-9ecd54/oYpbEeQgDDRtG7Vr3IxoK4oQzXaeABCIkgCq5C/?a=482431&ch=0&cr=8&dr=0&er=0&lr=video_gen_watermark_dyn&cd=0%7C0%7C0%7C3&cv=1&br=1141&bt=1141&cs=0&ds=3&ft=GX5HJ~te.yygZmo0P8j6cgkVQ9w6x&mime_type=video_mp4&qs=0&rc=Z2Q2NzU5OjxlNGlmMzU2Z0Bpam5xZDhvOnlvZTczNGY5M0BiNTUuNmAuNWAxXl4vMzNjYSMuMS5iYWFeX2RhLS1kNjBzcw%3D",
+      "w": 1280,
+      "h": 720,
+      "dur": 10.08,
+      "readyState": 4
+    }
+  ],
+  "mediaHits": [
+    {
+      "kind": "media-request",
+      "url": "https://v26-vdl.doubao.com/6294cc23a125c7c91b599006dcb9549d/7dad5929/video/tos/cn/tos-cn-v-9ecd54/oYpbEeQgDDRtG7Vr3IxoK4oQzXaeABCIkgCq5C/?a=482431&ch=0&cr=8&dr=0&er=0&lr=video_gen_watermark_dyn&cd=0%7C0%7C0%7C3&cv=1&br=1141&bt=1141&cs=0&ds=3&ft=GX5HJ~te.yygZmo0P8j6cgkVQ9w6x&mime_type=video_mp4&qs=0&rc=Z2Q2NzU5OjxlNGlmMzU2Z0Bpam5xZDhvOnlvZTczNGY5M0BiNTUuNmAuNWAxXl4vMzNjYSMuMS5iYWFeX2RhLS1kNjBzcw%3D%3D&btag=c0000e00008000&dy_q=1793152543&feature_id=e38567d78da7ae34faf3833d9e13c66f&l=20261028095334"
+    },
+    {
+      "url": "https://v26-vdl.doubao.com/6294cc23a125c7c91b599006dcb9549d/7dad5929/video/tos/cn/tos-cn-v-9ecd54/oYpbEeQgDDRtG7Vr3IxoK4oQzXaeABCIkgCq5C/?a=482431&ch=0&cr=8&dr=0&er=0&lr=video_gen_watermark_dyn&cd=0%7C0%7C0%7C3&cv=1&br=1141&bt=1141&cs=0&ds=3&ft=GX5HJ~te.yygZmo0P8j6cgkVQ9w6x&mime_type=video_mp4&qs=0&rc=Z2Q2NzU5OjxlNGlmMzU2Z0Bpam5xZDhvOnlvZTczNGY5M0BiNTUuNmAuNWAxXl4vMzNjYSMuMS5iYWFeX2RhLS1kNjBzcw%3D%3D&btag=c0000e00008000&dy_q=1793152543&feature_id=e38567d78da7ae34faf3833d9e13c66f&l=20261028095334",
+      "status": 206,
+      "ct": "video/mp4",
+      "len": "1472882"
+    }
+  ]
+}

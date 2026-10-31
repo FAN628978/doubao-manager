@@ -1,0 +1,98 @@
+
+==== home url https://www.doubao.com/chat/ chat True video True
+guidance: {'visible': True, 'text': '有什么我能帮你的吗？ 对话 工作 为你推荐 资讯：中汽学会发布 2027 年度汽车十大技术趋势 段誉是如何影响王语嫣的生活的？ 如何改善室内空气质量来降低甲醛？ WiFi在线是什么状态？ 对话 项目 视频生成 PPT 生成 更多技能 快速'}
+switch text: 对话 工作
+nav visible:
+   {'tag': 'DIV', 'testid': 'chat_route_layout_left_sash', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'flow_chat_sidebar', 'text': '豆包 新工作任务 Ctrl J 新对话 Ctrl Shift K 定时任务 Ct', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'workspace-switch-chip', 'text': '豆包', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'global-search-icon-entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'create_office_task_button', 'text': '新工作任务 Ctrl J', 'visible': True}
+   {'tag': 'DIV', 'testid': 'create_conversation_button', 'text': '新对话 Ctrl Shift K', 'visible': True}
+   {'tag': 'DIV', 'testid': 'sidebar-skills', 'text': '定时任务 Ctrl Shift T 插件 · 技能 · 伙伴 Ctrl Shif', 'visible': True}
+   {'tag': 'DIV', 'testid': 'cron-jobs-sidebar-entry', 'text': '定时任务 Ctrl Shift T', 'visible': True}
+   {'tag': 'DIV', 'testid': 'sidebar_skills_nav_button', 'text': '插件 · 技能 · 伙伴 Ctrl Shift S', 'visible': True}
+   {'tag': 'DIV', 'testid': 'ai_space_nav_button', 'text': '云盘 Ctrl Shift D', 'visible': True}
+   {'tag': 'DIV', 'testid': 'app-open-api-service', 'text': 'API 服务', 'visible': True}
+   {'tag': 'DIV', 'testid': 'skill-page-item-more', 'text': '更多', 'visible': True}
+   {'tag': 'DIV', 'testid': 'chat_list_wrapper', 'text': '项目 创建新项目 最近 主对话 江大南门小吃街程砚许栖柚炒饭场景视频生成 江大南', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-project', 'text': '项目 创建新项目 最近 主对话 江大南门小吃街程砚许栖柚炒饭场景视频生成 江大南', 'visible': True}
+   {'tag': 'SECTION', 'testid': 'project-grouped-section', 'text': '项目 创建新项目', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-project-list-entry', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-project-create-menu-trigger', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-group-menu-trigger', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-project-empty-state', 'text': '创建新项目', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-project-empty-create-blank', 'text': '创建新项目', 'visible': True}
+   {'tag': 'SECTION', 'testid': 'conversation-section', 'text': '最近 主对话 江大南门小吃街程砚许栖柚炒饭场景视频生成 江大南门小吃街深夜系统奖', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-group-menu-trigger', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '主对话', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+   {'tag': 'svg', 'testid': 'chat_item_dropdown_entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '江大南门小吃街程砚许栖柚炒饭场景视频生成', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-item-hide', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+   {'tag': 'svg', 'testid': 'chat_item_dropdown_entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '江大南门小吃街深夜系统奖励闪回', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-item-hide', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+   {'tag': 'svg', 'testid': 'chat_item_dropdown_entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '江大南门小吃街深夜系统奖励闪回', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-item-hide', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+   {'tag': 'svg', 'testid': 'chat_item_dropdown_entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '江大教学楼外许栖柚程砚Q版小剧场', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-item-hide', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+workish visible:
+   {'testid': 'workspace-switch-chip', 'text': '豆包', 'visible': True}
+   {'testid': 'create_office_task_button', 'text': '新工作任务 Ctrl J', 'visible': True}
+   {'testid': 'office-sug-preview-direct', 'text': '为你推荐 资讯：中汽学会发布 2027 年度汽车十大技术趋势 段誉是如何影响王语嫣的生活的？ 如何改', 'visible': True}
+
+==== after_work url https://www.doubao.com/chat/ chat True video False
+guidance: {'visible': True, 'text': '今天有什么工作要处理？ 对话 工作 为你推荐 业绩分析 这家公司的收入为什么变了 PDF 帮我把 PDF 文档转成飞书云文档 游戏策划 帮我设计一个游戏玩法 估值建模 帮我评估这家公司值多少钱 下载豆包工作电脑版 解锁本地任务完整能力 立即'}
+switch text: 对话 工作
+nav visible:
+   {'tag': 'DIV', 'testid': 'chat_route_layout_left_sash', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'flow_chat_sidebar', 'text': '豆包 新工作任务 Ctrl J 新对话 Ctrl Shift K 定时任务 Ct', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'workspace-switch-chip', 'text': '豆包', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'global-search-icon-entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'create_office_task_button', 'text': '新工作任务 Ctrl J', 'visible': True}
+   {'tag': 'DIV', 'testid': 'create_conversation_button', 'text': '新对话 Ctrl Shift K', 'visible': True}
+   {'tag': 'DIV', 'testid': 'sidebar-skills', 'text': '定时任务 Ctrl Shift T 插件 · 技能 · 伙伴 Ctrl Shif', 'visible': True}
+   {'tag': 'DIV', 'testid': 'cron-jobs-sidebar-entry', 'text': '定时任务 Ctrl Shift T', 'visible': True}
+   {'tag': 'DIV', 'testid': 'sidebar_skills_nav_button', 'text': '插件 · 技能 · 伙伴 Ctrl Shift S', 'visible': True}
+   {'tag': 'DIV', 'testid': 'ai_space_nav_button', 'text': '云盘 Ctrl Shift D', 'visible': True}
+   {'tag': 'DIV', 'testid': 'app-open-api-service', 'text': 'API 服务', 'visible': True}
+   {'tag': 'DIV', 'testid': 'skill-page-item-more', 'text': '更多', 'visible': True}
+   {'tag': 'DIV', 'testid': 'chat_list_wrapper', 'text': '项目 创建新项目 最近 主对话 江大南门小吃街程砚许栖柚炒饭场景视频生成 江大南', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-project', 'text': '项目 创建新项目 最近 主对话 江大南门小吃街程砚许栖柚炒饭场景视频生成 江大南', 'visible': True}
+   {'tag': 'SECTION', 'testid': 'project-grouped-section', 'text': '项目 创建新项目', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-project-list-entry', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-project-create-menu-trigger', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-group-menu-trigger', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-project-empty-state', 'text': '创建新项目', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-project-empty-create-blank', 'text': '创建新项目', 'visible': True}
+   {'tag': 'SECTION', 'testid': 'conversation-section', 'text': '最近 主对话 江大南门小吃街程砚许栖柚炒饭场景视频生成 江大南门小吃街深夜系统奖', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-group-menu-trigger', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '主对话', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+   {'tag': 'svg', 'testid': 'chat_item_dropdown_entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '江大南门小吃街程砚许栖柚炒饭场景视频生成', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-item-hide', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+   {'tag': 'svg', 'testid': 'chat_item_dropdown_entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '江大南门小吃街深夜系统奖励闪回', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-item-hide', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+   {'tag': 'svg', 'testid': 'chat_item_dropdown_entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '江大南门小吃街深夜系统奖励闪回', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-item-hide', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+   {'tag': 'svg', 'testid': 'chat_item_dropdown_entry', 'text': '', 'visible': True}
+   {'tag': 'DIV', 'testid': 'conversation-list-v2-item', 'text': '江大教学楼外许栖柚程砚Q版小剧场', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'conversation-list-v2-item-hide', 'text': '', 'visible': True}
+   {'tag': 'BUTTON', 'testid': 'chat_list_item_more_button', 'text': '', 'visible': True}
+workish visible:
+   {'testid': 'workspace-switch-chip', 'text': '豆包', 'visible': True}
+   {'testid': 'create_office_task_button', 'text': '新工作任务 Ctrl J', 'visible': True}
+   {'testid': 'office-sug-preview-direct', 'text': '为你推荐 业绩分析 这家公司的收入为什么变了 PDF 帮我把 PDF 文档转成飞书云文档 游戏策划 ', 'visible': True}

@@ -1,0 +1,326 @@
+STEP 1: goto https://www.doubao.com/
+STEP 2: wait chat_input visible (20s)
+  -> chat_input visible
+
+============================== s1_home ==============================
+URL: https://www.doubao.com/chat/
+TITLE: 豆包 - 字节跳动旗下 AI 智能助手
+{
+ "skills": [
+  {
+   "testid": "skill_bar_button_5000",
+   "text": "PPT 生成",
+   "visible": true
+  },
+  {
+   "testid": "skill_bar_button_3",
+   "text": "图像生成",
+   "visible": true
+  },
+  {
+   "testid": "skill_bar_button_more",
+   "text": "更多技能",
+   "visible": true
+  },
+  {
+   "testid": "skill_bar_button_more",
+   "text": "",
+   "visible": true
+  },
+  {
+   "testid": "skill_bar_button_more",
+   "text": "",
+   "visible": true
+  }
+ ],
+ "video": [],
+ "more": [
+  {
+   "tag": "DIV",
+   "testid": null,
+   "cls": "overflow-visible-item-SVWIz6",
+   "parentTestid": ""
+  },
+  {
+   "tag": "BUTTON",
+   "testid": "skill_bar_button_more",
+   "cls": "shrink-0 items-center justify-center font-[400] whitespace-nowrap ring-dbx-fill-",
+   "parentTestid": ""
+  },
+  {
+   "tag": "DIV",
+   "testid": null,
+   "cls": "min-w-0 truncate",
+   "parentTestid": "skill_bar_button_more"
+  },
+  {
+   "tag": "SPAN",
+   "testid": null,
+   "cls": "flex items-center",
+   "parentTestid": ""
+  }
+ ],
+ "panel": [],
+ "composerVisible": true,
+ "editable": true,
+ "actionbar": "对话 | 项目 | PPT 生成 | 图像生成 | 更多技能 | 快速 |  |  | ",
+ "entryKeys": []
+}
+screenshot: C:\Users\fht\Desktop\doubao-manager-v3\.tmp\diag\s1_home.png
+
+STEP 3: 调用 web_api.combined_video_settings(page)
+  -> None
+
+STEP 4: 代码原逻辑 —— first_visible(skill_bar_button_17)
+  -> skill_bar_button_17: None
+
+STEP 5: 找可见的「视频生成」文字
+  -> 可见视频生成: False
+
+STEP 6: 真实点击「更多技能」看看菜单
+  -> 点击 更多技能 box= {'x': 1108.300048828125, 'y': 906.6000366210938, 'width': 68, 'height': 22}
+
+============================== s2_more_menu ==============================
+URL: https://www.doubao.com/chat/
+TITLE: 豆包 - 字节跳动旗下 AI 智能助手
+{
+ "skills": [
+  {
+   "testid": "skill_bar_button_5000",
+   "text": "PPT 生成",
+   "visible": true
+  },
+  {
+   "testid": "skill_bar_button_3",
+   "text": "图像生成",
+   "visible": true
+  },
+  {
+   "testid": "skill_bar_button_more",
+   "text": "更多技能",
+   "visible": true
+  },
+  {
+   "testid": "skill_bar_button_more",
+   "text": "",
+   "visible": true
+  },
+  {
+   "testid": "skill_bar_button_more",
+   "text": "",
+   "visible": true
+  }
+ ],
+ "video": [
+  {
+   "tag": "LI",
+   "testid": null,
+   "cls": "min-w-0",
+   "parentTestid": ""
+  },
+  {
+   "tag": "BUTTON",
+   "testid": null,
+   "cls": "flex h-32 w-full min-w-0 items-center gap-12 rounded-18 text-left text-14 leadin",
+   "parentTestid": ""
+  },
+  {
+   "tag": "SPAN",
+   "testid": null,
+   "cls": "flex min-w-0 flex-1 items-center gap-12 overflow-hidden",
+   "parentTestid": ""
+  },
+  {
+   "tag": "SPAN",
+   "testid": null,
+   "cls": "flex max-w-full min-w-0 shrink-0 items-center gap-6",
+   "parentTestid": ""
+  },
+  {
+   "tag": "SPAN",
+   "testid": null,
+   "cls": "min-w-0 truncate",
+   "parentTestid": ""
+  },
+  {
+   "tag": "LI",
+   "testid": null,
+   "cls": "min-w-0",
+   "parentTestid": ""
+  },
+  {
+   "tag": "BUTTON",
+   "testid": null,
+   "cls": "flex h-32 w-full min-w-0 items-center gap-12 rounded-18 text-left text-14 leadin",
+   "parentTestid": ""
+  },
+  {
+   "tag": "SPAN",
+   "testid": null,
+   "cls": "flex min-w-0 flex-1 items-center gap-12 overflow-hidden",
+   "parentTestid": ""
+  },
+  {
+   "tag": "SPAN",
+   "testid": null,
+   "cls": "flex max-w-full min-w-0 shrink-0 items-center gap-6",
+   "parentTestid": ""
+  },
+  {
+   "tag": "SPAN",
+   "testid": null,
+   "cls": "min-w-0 truncate",
+   "parentTestid": ""
+  }
+ ],
+ "more": [
+  {
+   "tag": "DIV",
+   "testid": null,
+   "cls": "overflow-visible-item-SVWIz6",
+   "parentTestid": ""
+  },
+  {
+   "tag": "BUTTON",
+   "testid": "skill_bar_button_more",
+   "cls": "shrink-0 items-center justify-center font-[400] whitespace-nowrap ring-dbx-fill-",
+   "parentTestid": ""
+  },
+  {
+   "tag": "DIV",
+   "testid": null,
+   "cls": "min-w-0 truncate",
+   "parentTestid": "skill_bar_button_more"
+  },
+  {
+   "tag": "SPAN",
+   "testid": null,
+   "cls": "flex items-center",
+   "parentTestid": ""
+  }
+ ],
+ "panel": [],
+ "composerVisible": true,
+ "editable": true,
+ "actionbar": "推荐 (4) | 视频生成 | 帮我写作 | 可视化 | 将数据、流程、机制、架构、关系和时间线转成 ECharts 或确定性 HTML/SVG 可视化 | 定时任务 | 创建、查看、更新或删除定时任务 | 快捷功能 (6) | 帮我写作 | 视频生成 | 录音转写 | 音乐生成 | AI 播客 | AI 表格 | 办公 (11) | PPT | 帮你生成、编辑和美化 PPT | 会议 | 帮你查询会中实时信息、会议记录与产物 | 多维表格 | 帮你搭建和管理多维表格，支持记录读写、跨表计算和图表分析 | 查看全部 | 金融 (11) | 个股日报 | 单一股票日报，梳理行情、资金流、新闻公告",
+ "entryKeys": []
+}
+screenshot: C:\Users\fht\Desktop\doubao-manager-v3\.tmp\diag\s2_more_menu.png
+
+  菜单项文本（role=menuitem/option/button 可见）:
+   [role="menuitem"]: []
+   [role="option"]: []
+   [role="menuitemradio"]: []
+  -> 点击了弹出菜单中的「视频生成」
+
+============================== s3_after_video_click ==============================
+URL: https://www.doubao.com/chat/
+TITLE: 豆包 - 字节跳动旗下 AI 智能助手
+{
+ "skills": [],
+ "video": [
+  {
+   "tag": "DIV",
+   "testid": null,
+   "cls": "overflow-visible-item-SVWIz6",
+   "parentTestid": ""
+  },
+  {
+   "tag": "DIV",
+   "testid": "skill_input_exit_button",
+   "cls": "\n        flex items-center gap-2 rounded-xl bg-g-exit-skill-btn-bg pr-8 pl-4\n   ",
+   "parentTestid": ""
+  },
+  {
+   "tag": "DIV",
+   "testid": "skill_input_exit_button",
+   "cls": "\n          flex min-w-0 items-center gap-2 select-none\n          undefined\n     ",
+   "parentTestid": "skill_input_exit_button"
+  },
+  {
+   "tag": "DIV",
+   "testid": null,
+   "cls": "\n            shrink-0 whitespace-nowrap select-none\n            undefined\n      ",
+   "parentTestid": "skill_input_exit_button"
+  }
+ ],
+ "more": [],
+ "panel": [
+  {
+   "testid": "video-generation-params-panel",
+   "text": "自动 · 10s",
+   "visible": true
+  }
+ ],
+ "composerVisible": true,
+ "editable": true,
+ "actionbar": "视频生成 | 模型 | Seedance 2.0 Mini | 自动 · 10s |  |  | ",
+ "entryKeys": [
+  {
+   "key": "video-generation-params-panel",
+   "text": "自动 · 10s",
+   "visible": true
+  }
+ ]
+}
+screenshot: C:\Users\fht\Desktop\doubao-manager-v3\.tmp\diag\s3_after_video_click.png
+
+STEP 7: 再调用 combined_video_settings
+  -> FOUND: 自动 · 10s
+
+STEP 8: 直接调用 set_ui_option(mode) —— 与任务失败时完全一致的代码路径
+  -> SET MODE OK
+
+============================== s4_final ==============================
+URL: https://www.doubao.com/chat/
+TITLE: 豆包 - 字节跳动旗下 AI 智能助手
+{
+ "skills": [],
+ "video": [
+  {
+   "tag": "DIV",
+   "testid": null,
+   "cls": "overflow-visible-item-SVWIz6",
+   "parentTestid": ""
+  },
+  {
+   "tag": "DIV",
+   "testid": "skill_input_exit_button",
+   "cls": "\n        flex items-center gap-2 rounded-xl bg-g-exit-skill-btn-bg pr-8 pl-4\n   ",
+   "parentTestid": ""
+  },
+  {
+   "tag": "DIV",
+   "testid": "skill_input_exit_button",
+   "cls": "\n          flex min-w-0 items-center gap-2 select-none\n          undefined\n     ",
+   "parentTestid": "skill_input_exit_button"
+  },
+  {
+   "tag": "DIV",
+   "testid": null,
+   "cls": "\n            shrink-0 whitespace-nowrap select-none\n            undefined\n      ",
+   "parentTestid": "skill_input_exit_button"
+  }
+ ],
+ "more": [],
+ "panel": [
+  {
+   "testid": "video-generation-params-panel",
+   "text": "自动 · 10s",
+   "visible": true
+  }
+ ],
+ "composerVisible": true,
+ "editable": true,
+ "actionbar": "视频生成 | 模型 | Seedance 2.0 Mini | 自动 · 10s |  |  | ",
+ "entryKeys": [
+  {
+   "key": "video-generation-params-panel",
+   "text": "自动 · 10s",
+   "visible": true
+  }
+ ]
+}
+screenshot: C:\Users\fht\Desktop\doubao-manager-v3\.tmp\diag\s4_final.png
+
+浏览器已关闭

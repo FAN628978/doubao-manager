@@ -1,0 +1,25 @@
+{
+  "steps": [
+    {
+      "step": "composer-ready",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "set-mode=text2video",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "set-ratio=16:9",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "step": "set-duration=4",
+      "ok": true,
+      "detail": ""
+    }
+  ],
+  "panelText": "16:9 · 4s"
+}

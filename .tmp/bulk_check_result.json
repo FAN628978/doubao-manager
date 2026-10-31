@@ -1,0 +1,75 @@
+{
+  "after_shift": {
+    "selected": 2,
+    "checked": [
+      true,
+      true
+    ],
+    "count": "已选 2 项",
+    "total": "当前筛选 2 项"
+  },
+  "buttons": [
+    {
+      "action": "prepare",
+      "disabled": true,
+      "n": "0",
+      "title": "选中的任务中没有适用项"
+    },
+    {
+      "action": "send",
+      "disabled": true,
+      "n": "0",
+      "title": "选中的任务中没有适用项"
+    },
+    {
+      "action": "confirm",
+      "disabled": false,
+      "n": "2",
+      "title": "对 2 个适用任务执行"
+    },
+    {
+      "action": "download",
+      "disabled": false,
+      "n": "2",
+      "title": "对 2 个适用任务执行"
+    },
+    {
+      "action": "push",
+      "disabled": false,
+      "n": "2",
+      "title": "对 2 个适用任务执行"
+    },
+    {
+      "action": "delete",
+      "disabled": false,
+      "n": "2",
+      "title": "对 2 个适用任务执行"
+    }
+  ],
+  "after_header_uncheck": {
+    "selected": 0,
+    "head": false,
+    "indeterminate": false
+  },
+  "after_header_check": {
+    "selected": 2,
+    "head": true
+  },
+  "filtered_hidden": {
+    "selected": 2,
+    "count": "已选 2 项",
+    "total": "当前筛选 0 项",
+    "warn": "其中 2 项不在当前筛选",
+    "warnHidden": false
+  },
+  "after_escape": 0,
+  "sticky": {
+    "barTop": 292,
+    "barPos": "sticky",
+    "colPos": "sticky",
+    "colLeft": 275
+  },
+  "errors": [
+    "Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ]
+}

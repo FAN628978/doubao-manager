@@ -1,0 +1,173 @@
+{
+  "url": "https://www.doubao.com/chat/38449775784713730",
+  "testids": [
+    "ai_space_nav_button",
+    "app-open-api-service",
+    "audio_play_button",
+    "chat-route-layout",
+    "chat_header_avatar_button",
+    "chat_input",
+    "chat_input_action_mode",
+    "chat_input_action_model",
+    "chat_input_input",
+    "chat_item_dropdown_entry",
+    "chat_list_item_more_button",
+    "chat_list_wrapper",
+    "chat_route_layout_left_sash",
+    "chat_route_layout_leftside_nav",
+    "conversation-list-v2-group-menu-trigger",
+    "conversation-list-v2-item",
+    "conversation-list-v2-item-hide",
+    "conversation-list-v2-project",
+    "conversation-list-v2-project-create-menu-trigger",
+    "conversation-list-v2-project-empty-create-blank",
+    "conversation-list-v2-project-empty-state",
+    "conversation-list-v2-project-list-entry",
+    "conversation-list-v2-status-failed",
+    "conversation-section",
+    "conversation_header_more_button",
+    "conversation_header_tip_text",
+    "create_conversation_button",
+    "create_office_task_button",
+    "cron-jobs-sidebar-entry",
+    "edit_image_hover_tag_open_canvas_btn",
+    "editable_conversation_name",
+    "file_drop_area",
+    "flow_chat_sidebar",
+    "global-search-icon-entry",
+    "guidance-skill-bar",
+    "message-block-container",
+    "message-list",
+    "message_action_bar",
+    "message_action_conversation_fork",
+    "message_action_copy",
+    "message_action_dislike",
+    "message_action_edit",
+    "message_action_icon_share",
+    "message_action_like",
+    "message_action_more",
+    "message_action_share",
+    "message_content",
+    "message_text_content",
+    "project-grouped-section",
+    "receive_message",
+    "ref-content",
+    "ref-content-wrapper",
+    "samantha_layout_right_side",
+    "send_message",
+    "sidebar-skills",
+    "sidebar_footer_setting_entry",
+    "sidebar_skills_nav_button",
+    "siderbar_close_btn",
+    "skill-page-item-more",
+    "skill_bar_button_1005",
+    "skill_bar_button_17",
+    "skill_bar_button_2",
+    "skill_bar_button_3",
+    "skill_bar_button_5000",
+    "skill_bar_button_5003",
+    "to-bottom-button",
+    "union_message",
+    "upload-file-input",
+    "upload_file_button",
+    "workspace-switch-chip"
+  ],
+  "card": {
+    "coverCount": 77,
+    "coverSrc": "https://aka.doubaocdn.com/s/xrb0U8fk7m",
+    "coverClass": "cover-u1rIsU",
+    "ancestorChain": [
+      {
+        "tag": "IMG",
+        "testid": "",
+        "cls": "cover-u1rIsU",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "block-video-MzfWVN video-hover-button-group-container-mh06XY",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "h-full w-full",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "image-box-grid-item-FTeESI",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "image-box-grid-EYaIcP",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "flex w-full flex-col gap-20",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "relative z-0 max-w-full min-w-0",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "message_content",
+        "cls": "relative grid w-full grid-cols-[minmax(0,1fr)_auto]",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "flex flex-col flex-grow max-w-full min-w-0",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "receive_message",
+        "cls": "flex flex-row w-full w-full max-w-full s-font-base text-s-color-text-secondary p-0 rounded-s-radius-s bg-transparent rec",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "message-block-container",
+        "cls": "w-full",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "union_message",
+        "cls": "w-full inner-item-BjaxFt",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "my-0 w-full mx-auto max-w-(--content-max-width) has-[.side-by-side-messages]:mx-0 has-[.side-by-side-messages]:max-w-ful",
+        "role": ""
+      },
+      {
+        "tag": "DIV",
+        "testid": "",
+        "cls": "w-full pl-14 pr-[calc(var(--conversation-message-content-padding-right,15px)-10px)] transition-[padding-right] duration-",
+        "role": ""
+      }
+    ],
+    "nearbyButtons": [],
+    "tailText": "题的 PDF\nLaTeX 公式对齐包\n撰写思想汇报\nWord 排版设置\n判断式子次模性\n介绍具身智能\n本科毕业论文标题\n&&&\n电影级3D国漫雨后城楼视频生成\nAI 生成可能有误 请核实\n生成视频：电影级 3D 半写实国漫，雨后城楼远景，云雾缓慢流动，摄影机缓慢推进，暖色夕阳光。，16:9，4s，720p\n我将为你生成一条雨后城楼氛围短片，重点呈现云雾流动与夕阳下的缓慢推进镜头。\n视频生成参数确认\n模型： Seedance 2.0 Mini\n时长： 4 秒\n比例： 16:9 横屏\n画面方向： 电影级 3D 半写实国漫，雨后城楼远景，暖色夕阳光，云雾缓慢流动，摄影机平稳缓慢推进\n声音： 无台词，以低沉电影氛围音乐和轻微雨后环境声为主\n清晰度： 720p\n确认后我再开始生成视频。\n今天 09:52\nqueren\n收到，开始生成 ✅\n参数：Seedance 2.0 Mini｜4s｜16:9｜720p\n提示词：电影级 3D 半写实国漫，雨后城楼远景，云雾缓慢流动，摄影机缓慢推进，暖色夕阳光，柔和光影，细腻氛围感，电影构图\n生成完成后我通知你。\n今天 09:53\n生成视频：直接生成，10s，720p\n今天 09:53\n本次使用 Seedance 2.0 Mini 生成，预计等待 5 分钟。视频生成好后，我会主动发送给你。本次生成将消耗每日免费额度。\n今天 09:53\n现在生成\n今天 09:54\n已收到，视频正在生成中，请稍等片刻。\n今天 09:54\n生成视频：直接生成，10s，720p\n你的视频生成好了。\n对话\n视频生成\n帮我写作\nPPT 生成\n图像生成\n录音转写\nAI 表格\n快速\n\n\n"
+  },
+  "mediaBeforeClick": [],
+  "clickError": "TimeoutError: Locator.click: Timeout 6000ms exceeded.\nCall log:\n  - waiting for locator(\"img[class*=\\\"cover\\\"]\").last\n    - locator resolved to <img class=\"cover-u1rIsU\" src=",
+  "clickedCover": false,
+  "videosAfterClick": [],
+  "mediaAfterClick": []
+}

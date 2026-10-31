@@ -1,0 +1,14 @@
+{
+  "job_id": "job_c6cb739ef8a5",
+  "ratio": "16:9",
+  "duration": 9,
+  "idempotency_key": "h3-video-task-5673",
+  "video_url": "",
+  "web_page_url": "",
+  "error_code": "PROMPT_UNVERIFIED",
+  "mode": "reference_images",
+  "assets_json": "{\"reference_asset_ids\": [\"asset_845d3049979847be\", \"asset_4c7277c5f0644b60\", \"asset_4873263f78874965\", \"asset_4ddcd307ebd04763\"]}",
+  "request_fingerprint": "a65c2cc8ecdc93f779384e91b1d06dfe7e87b9ed21133015f7b12d272f337402",
+  "result_source": "",
+  "model": "Seedance 2.0 Fast"
+}

@@ -1,0 +1,44 @@
+[
+  {
+    "id": 161,
+    "job_id": "job_c6cb739ef8a5",
+    "status": "queued",
+    "message": "任务已写入持久化队列",
+    "timestamp": "2026-10-28T07:19:12+00:00"
+  },
+  {
+    "id": 162,
+    "job_id": "job_c6cb739ef8a5",
+    "status": "opening",
+    "message": "任务已独占，开始浏览器操作",
+    "timestamp": "2026-10-28T07:19:12+00:00"
+  },
+  {
+    "id": 163,
+    "job_id": "job_c6cb739ef8a5",
+    "status": "opening",
+    "message": "打开豆包视频页",
+    "timestamp": "2026-10-28T07:19:18+00:00"
+  },
+  {
+    "id": 164,
+    "job_id": "job_c6cb739ef8a5",
+    "status": "configuring",
+    "message": "设置视频模式、比例、时长，并核对实际控件",
+    "timestamp": "2026-10-28T07:19:23+00:00"
+  },
+  {
+    "id": 165,
+    "job_id": "job_c6cb739ef8a5",
+    "status": "uploading",
+    "message": "上传并确认图片素材",
+    "timestamp": "2026-10-28T07:19:37+00:00"
+  },
+  {
+    "id": 166,
+    "job_id": "job_c6cb739ef8a5",
+    "status": "needs_review",
+    "message": "提示词写入后无法验证；未提交任务",
+    "timestamp": "2026-10-28T07:19:38+00:00"
+  }
+]
