@@ -156,6 +156,7 @@ H3/外部系统 POST 建单（模式由本地设置）        → status=queued�
 - **人工判定失败是最终裁决**：`/mark-failed` 把任务置为 `failed`、错误码 `MANUAL_CONFIRMED_FAILED`，并释放额度占用；H3 收到该错误码后显示失败、停止等待。判定后仍可 `/resend`，但 H3 需要手动召回才会恢复轮询。
 - `manual` 任务的 `needs_review` / 普通 `failed` 在 H3 侧映射为 `processing`（最长 7 天），等待本机操作者重新发送或关联下载；只有 `MANUAL_CONFIRMED_FAILED` 才按失败处理。自动任务仍按失败处理。H3 始终轮询原 `job_id`，最终从同一个任务取回视频。
 - `/start` 完成后状态进入 `awaiting_manual_send`，`web_page_url` 可能还是首页或 `/chat/local_*`（因为还没发消息）。页面句柄保留在服务进程内，**请保持 Chrome 窗口和服务运行**；服务重启会把该状态转为 `needs_review`（错误码 `MANUAL_SEND_INTERRUPTED`）并保留额度占用。
+- 如果异常任务没有记录 `web_page_url`，可调用 `POST /api/v1/videos/generations/{id}/bind-page`，请求体为 `{"page_url":"https://www.doubao.com/chat/<会话ID>"}`。该操作只绑定人工确认的具体会话，不会提交生成或自动下载；绑定后再调用 `/recall`。通用 `/chat/`、临时 `/chat/local_*` 和非豆包地址会被拒绝。
 - 出片后调用 `/recall`。它会优先复用准备时的标签页；发送后标签页 URL 会转成真实 `/chat/<id>` 并被记录，之后即使页面关闭也可按会话召回。`recall` 只下载已有结果，**绝不重新提交生成**。
 - 管理台“下载视频”使用 `/recall?force_redownload=true`；即使任务已经归档，也会重新从任务页面定位并下载结果、成功后覆盖旧文件。重新下载失败时保留原归档文件和 `downloaded` 状态。
 - 如果页面仍停在“确认生成”提示，`recall` 返回 `needs_review` / `CONFIRM_REQUIRED`；先在网页完成确认或使用“发送确认语”，再点一次“关联下载”。

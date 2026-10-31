@@ -303,6 +303,10 @@ class ConfirmationSendRequest(BaseModel):
     preset_id: str = Field(min_length=1, max_length=80)
 
 
+class BindPageRequest(BaseModel):
+    page_url: str = Field(min_length=1, max_length=2048)
+
+
 class ReviewNeeded(Exception):
     def __init__(self, code: str, message: str):
         self.code, self.message = code, message
@@ -2345,6 +2349,42 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             await page.close()
         except Exception:
             pass
+        return detail(jobid)
+
+    @app.post("/api/v1/videos/generations/{jobid}/bind-page", tags=["Doubao Web Video"])
+    async def bind_page(jobid: str, payload: BindPageRequest,
+                        x_api_key: Optional[str] = Header(None)):
+        """Bind a manually identified Doubao conversation without starting recall."""
+        auth(x_api_key); ensure_schema()
+        item = detail(jobid)
+        if item["status"] not in (MANUAL_WAIT, "needs_review", "failed"):
+            raise HTTPException(409, "仅待人工发送、需人工处理或失败的任务可以绑定网页")
+        task = pending.get(jobid)
+        if task is not None and not task.done():
+            raise HTTPException(409, "任务正在执行，请等待当前步骤结束后再绑定网页")
+        page_url = payload.page_url.strip()
+        parsed = urlparse(page_url)
+        try:
+            trusted_port = parsed.port in (None, 443)
+        except ValueError:
+            trusted_port = False
+        if (parsed.scheme != "https"
+                or (parsed.hostname or "").lower() not in ("doubao.com", "www.doubao.com")
+                or parsed.username is not None or parsed.password is not None
+                or not trusted_port or not REAL_CHAT_URL.fullmatch(parsed.path)):
+            raise HTTPException(422, "请提供 https://www.doubao.com/chat/<会话ID> 格式的具体会话地址")
+        current_url = (item["web"].get("web_page_url") or "").strip()
+        changed_conversation = current_url.split("?")[0] != page_url.split("?")[0]
+        with db() as c:
+            if changed_conversation:
+                c.execute("""UPDATE video_web_jobs
+                             SET web_page_url=?, result_card_index=NULL, video_url='', result_source=''
+                             WHERE job_id=?""", (page_url, jobid))
+            else:
+                c.execute("UPDATE video_web_jobs SET web_page_url=? WHERE job_id=?",
+                          (page_url, jobid))
+            c.execute("INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
+                      (jobid, item["status"], "已人工绑定具体豆包会话，等待关联下载", ts()))
         return detail(jobid)
 
     @app.post("/api/v1/videos/generations/{jobid}/manual-result",tags=["Doubao Web Video"])

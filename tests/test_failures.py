@@ -301,6 +301,55 @@ def test_jobs_expose_task_page_and_open_page_validation(tmp_path, monkeypatch):
         assert row['manual_confirm_sent'] is True
 
 
+def test_bind_page_requires_specific_doubao_conversation_and_resets_old_binding(tmp_path, monkeypatch):
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
+    with TestClient(application.app) as client:
+        acc = client.post('/api/accounts', json={'name': '人工绑定账号'}).json()['id']
+        created = client.post('/api/v1/videos/generations',
+                              json={'account_id': acc, 'prompt': '镜头', 'auto_start': False})
+        job = created.json()['id']
+        endpoint = f'/api/v1/videos/generations/{job}/bind-page'
+
+        assert client.post(endpoint, json={
+            'page_url': 'https://www.doubao.com/chat/38449850653386498'
+        }).status_code == 409
+
+        with application.db() as c:
+            c.execute("UPDATE jobs SET status='needs_review' WHERE id=?", (job,))
+            c.execute("""UPDATE video_web_jobs
+                         SET web_page_url='https://www.doubao.com/chat/old',
+                             result_card_index=3, video_url='https://example.invalid/old.mp4',
+                             result_source='old'
+                         WHERE job_id=?""", (job,))
+
+        invalid_urls = (
+            'https://www.doubao.com/chat/',
+            'https://www.doubao.com/chat/local_2001034190155126',
+            'https://www.doubao.com/?next=/chat/38449850653386498',
+            'https://evil.example/chat/38449850653386498',
+            'http://www.doubao.com/chat/38449850653386498',
+        )
+        for page_url in invalid_urls:
+            response = client.post(endpoint, json={'page_url': page_url})
+            assert response.status_code == 422, (page_url, response.text)
+
+        target = 'https://www.doubao.com/chat/38449850653386498?from=history'
+        response = client.post(endpoint, json={'page_url': target})
+        assert response.status_code == 200, response.text
+        assert response.json()['web']['web_page_url'] == target
+        with application.db() as c:
+            bound = c.execute("""SELECT web_page_url,result_card_index,video_url,result_source
+                                 FROM video_web_jobs WHERE job_id=?""", (job,)).fetchone()
+        assert bound['web_page_url'] == target
+        assert bound['result_card_index'] is None
+        assert bound['video_url'] == '' and bound['result_source'] == ''
+
+        listed = next(x for x in client.get('/api/jobs').json() if x['id'] == job)
+        assert listed['has_task_page'] is True and listed['web_page_url'] == target
+        events = client.get(f'/api/v1/videos/generations/{job}/events').json()
+        assert any('人工绑定具体豆包会话' in event['message'] for event in events)
+
+
 def test_open_page_reuses_or_opens_managed_tab(tmp_path, monkeypatch):
     from fastapi import FastAPI
     import web_api
