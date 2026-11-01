@@ -260,6 +260,11 @@ def build_exception_context(
             "page_url": safe_url(
                 page_data.get("url") or state.get("web_page_url")
             ),
+            "session_url": safe_url(
+                state.get("session_url") or state.get("web_page_url")
+            ),
+            "session_id": state.get("session_id") or "",
+            "result_card_index": state.get("result_card_index"),
             "last_assistant_message": page_data.get("last_assistant_message") or "",
             "dom_state": {
                 "available": bool(page_data.get("available")),
@@ -278,8 +283,13 @@ def build_exception_context(
             },
             "quota_state": state.get("quota_state") or "",
             "submit_mode": state.get("submit_mode") or "",
+            "submission_state": state.get("submission_state") or "",
             "current_status": state.get("status") or "",
             "attempt": state.get("attempt") or 0,
+            "account_owner_job_id": state.get("account_owner_job_id") or "",
+            "account_owned_by_job": bool(
+                state.get("account_owned_by_job", True)
+            ),
             "has_archived_video": bool(state.get("video_path")),
             "has_result_push_target": bool(state.get("result_push_url")),
             "delivery_state": state.get("delivery_state") or "",

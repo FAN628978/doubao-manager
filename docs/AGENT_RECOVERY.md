@@ -1,115 +1,139 @@
-# Claude 异常处理 Agent
+# Claude CLI 异常自主恢复
 
-本功能是豆包视频业务的增量模块，默认关闭。正常任务不会调用 Agent；只有现有
-worker、recall worker、下载/回推异常出口在已经完成原状态更新后，才会异步转交诊断。
+异常恢复入口默认启动本机 `claude -p` 非交互进程。程序启动时自动检测并接管异常，
+无需设置启用开关、API Key 或模型；正常视频生成、下载和调度链路不会启动 Claude。
+每个异常任务拥有独立的 CLI 进程、MCP 工具会话和额度预算。
+
+运行时只使用 Claude Code CLI；不再提供 Messages API 或其他 Agent 的入口或自动回退。
+
+角色定义和业务知识按 Claude Code 项目结构维护：
+
+- `.claude/agents/doubao-recovery.md`
+- `.claude/skills/doubao-recovery/SKILL.md`
+
+服务在启动 `claude -p` 时读取这两份定义并注入任务上下文。MCP 配置因任务
+和一次性 token 而动态生成，不写入项目级静态 `.mcp.json`。
+
+## 环境要求
+
+- 已安装并登录 Claude Code CLI，终端可执行 `claude --version`。
+- 使用 CLI 自己的 Claude 登录和模型配置；异常恢复服务不会读取或转发
+  `.claude/settings.local.json` 中的 `ANTHROPIC_*` 旧配置。
+- 管理台通过 `start.bat` 或 `python -m uvicorn app:app --app-dir src` 在
+  `127.0.0.1:8765` 运行。
+- 运行管理台的 Python 环境可以执行 `python -m agent_recovery.mcp_server`。
 
 ## 配置
 
-支持以下环境变量：
-
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
-| `ANTHROPIC_API_KEY` | Anthropic API Key | 空 |
-| `ANTHROPIC_MODEL` | Claude 模型 ID | 空 |
-| `ANTHROPIC_BASE_URL` | Anthropic Messages API 根地址 | `https://api.anthropic.com` |
-| `DOUBAO_AGENT_ENABLED` | 是否启用 | `false` |
-| `DOUBAO_AGENT_MODE` | `diagnose_only` 或 `auto_safe` | `diagnose_only` |
-| `DOUBAO_AGENT_TIMEOUT_SECONDS` | Claude API 超时秒数 | `30` |
-| `DOUBAO_AGENT_RECOVERY_OBSERVE_SECONDS` | 执行原任务召回后观察结果的秒数 | `20` |
-| `DOUBAO_AGENT_DEDUPE_SECONDS` | 同一任务触发去重窗口 | `300` |
-| `DOUBAO_AGENT_MAX_ACTIONS` | 单次异常最多连续执行的恢复动作数 | `4` |
-| `DOUBAO_AGENT_MAX_CONCURRENCY` | 同时处理的异常数 | `2` |
+| `DOUBAO_AGENT_ENABLED` | 异常恢复开关；仅在需要临时停用时设为 `false` | `true` |
+| `DOUBAO_CLAUDE_CLI_PATH` | Claude CLI 绝对路径；留空自动检测 PATH 和 npm 目录 | 自动检测 |
+| `DOUBAO_AGENT_CLI_TIMEOUT_SECONDS` | 单个 Claude CLI 进程超时秒数 | `900` |
+| `DOUBAO_AGENT_CLI_PERMISSION_MODE` | 旧配置兼容字段；实际固定为最高权限 `bypassPermissions` | `bypassPermissions` |
+| `DOUBAO_AGENT_PYTHON_PATH` | MCP 子进程 Python 路径 | 当前 Python |
+| `DOUBAO_AGENT_SPEND_BUDGET` | 单次异常允许的付费恢复动作数 | `1` |
+| `DOUBAO_AGENT_MAX_ACTIONS` | 单次异常最多工具动作数 | `12` |
+| `DOUBAO_AGENT_MAX_ACTION_ATTEMPTS` | 同一工具最多重复次数 | `3` |
+| `DOUBAO_AGENT_MAX_CONCURRENCY` | 同时运行的异常恢复数 | `2` |
+| `DOUBAO_AGENT_DEDUPE_SECONDS` | 同一任务重复通知去重窗口 | `300` |
+| `DOUBAO_RECOVERY_BRIDGE_URL` | CLI/MCP 回调管理台的本地地址 | `http://127.0.0.1:8765` |
 
-Agent 使用 Claude Messages API。PowerShell 示例：
+`DOUBAO_*` 配置可从进程环境或项目 `.claude/settings.local.json` 的 `env`
+读取，进程环境优先。Claude 的登录、模型和 provider 配置只由 Claude CLI
+自身管理；服务不会覆盖 `ANTHROPIC_*`。
+
+PowerShell 示例：
 
 ```powershell
-$env:ANTHROPIC_BASE_URL = "https://api.anthropic.com"
-$env:ANTHROPIC_MODEL = "<Anthropic 控制台中可用的 Claude 模型 ID>"
-$env:ANTHROPIC_API_KEY = "<真实的 Anthropic API Key>"
-$env:DOUBAO_AGENT_ENABLED = "true"
-$env:DOUBAO_AGENT_MODE = "diagnose_only"
+$env:DOUBAO_CLAUDE_CLI_PATH = "$env:APPDATA\npm\claude.cmd"
+$env:DOUBAO_AGENT_CLI_TIMEOUT_SECONDS = "900"
+$env:DOUBAO_AGENT_SPEND_BUDGET = "1"
 ```
 
-`localhost:60007` 只提供 Anthropic 兼容接口，并不代表它背后的模型是 Claude。
-当前该地址返回的是 `deepseek-v4-flash`，不能作为 Claude Agent 的验收配置。若使用
-自建 Claude 网关，需确认网关实际路由到 Claude 模型，再设置对应的
-`ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL` 和鉴权值。
+以上均为可选覆盖项。正常情况下只需本机已安装并登录 Claude Code CLI；
+启动管理台后会自动以 `bypassPermissions` 运行异常恢复，不会覆盖 CLI 的
+自有登录，也不会继承 `ANTHROPIC_*` 模型网关配置。
 
-本应用会读取项目级 `.claude/settings.local.json` 中的 `env`。进程环境变量优先，
-未设置的环境变量才使用该文件中的值。该文件已加入 `.gitignore`，避免提交本地鉴权值。
-当前文件连接的是 `localhost:60007` 的 `deepseek-v4-flash`，因此只能用于接口联调，
-尚不是 Claude 模型。
+## 执行流程
 
-首次启用建议保持 `diagnose_only`，确认日志中的诊断稳定后再切换为 `auto_safe`。
+1. 原 worker/recall/推送异常先按既有逻辑更新任务状态。
+2. `ExceptionRecoveryService` 为该任务分配账号恢复租约。
+3. 服务生成一次性工具 token，写入临时 MCP 配置。
+4. 启动独立 `claude -p --output-format json` 进程，传入任务 ID、异常、
+   阶段、会话 URL 和最近业务事件。
+5. Claude 通过受控 MCP 工具多轮检查页面、处理 DOM/弹窗、召回和下载结果、
+   修复任务或重推 H3。
+6. 每次工具调用都回到现有 `RecoveryBackend`，由策略层检查账号、
+   提交状态、额度、归档结果和动作预算。
+7. CLI 结束后服务重新读取任务状态。只有任务已进入正常队列、生成、下载或
+   归档状态时才记录恢复成功；否则转人工待办并写明原因。
 
-## 触发位置
+前端任务列表会实时显示 `Claude 处理中`、当前恢复工具和核对阶段。恢复结束后
+显示 `Claude 已转人工` 或错误原因；处理中会禁用可能抢占浏览器、重复提交、
+下载或推送的操作，但“打开窗口”仍可用于人工观察。
 
-- 自动 worker 的 `ReviewNeeded` / 未预期异常出口。
-- recall worker 的 `ReviewNeeded` / 未预期异常出口。
-- 人工任务点击发送后出现 `SUBMISSION_UNCONFIRMED` 的出口。
-- 人工确认语发送失败/不确定的既有异常出口。
-- H3 回推异常出口。
+## 安全边界
 
-原异常处理、任务状态和业务事件仍先按原逻辑写入。Agent 只创建后台任务，Claude
-超时、网络错误或诊断失败只会写入独立日志，不会覆盖原异常。
+- CLI 只加载 `doubao_recovery` MCP server，内置 Bash、文件读写、编辑、
+  Web 搜索等工具全部禁用。
+- MCP server 只能使用启动时注入的单个 `job_id` 和一次性 token。
+- 临时 token 不写入长期日志；内部 HTTP 工具桥校验 token 和任务绑定。
+- 登录、验证码、账号额度不足和账号被其他任务占用时不自动操作。
+- 提交/扣费不确定时禁止 `restart_auto` 和 `regenerate`，必须先核对历史结果。
+- 已有归档视频时禁止覆盖、删除或重新生成。
+- 付费动作受 `DOUBAO_AGENT_SPEND_BUDGET` 限制。
+- Claude 不能编辑生产源码或写入任意文件。
 
-## 异常与恢复策略
+## 恢复工具
 
-### 代理可自行处置（放开权限）
+| 工具 | 作用 |
+| --- | --- |
+| `restart_browser` | 重启该账号的受管浏览器上下文 |
+| `switch_page` | 切到任务唯一绑定的会话标签 |
+| `refresh_page` | 刷新任务页 |
+| `inspect_dom` | 读取 DOM、控件、上传和网络错误，不使用截图 |
+| `dismiss_popup` | 仅关闭有明确关闭控件的普通弹窗 |
+| `locate_task_page` | 恢复任务会话 URL/ID 和标签页绑定 |
+| `verify_task_status` | 核对数据库与页面状态 |
+| `check_assets` | 检查任务引用素材是否存在 |
+| `recall_existing_result` | 按任务卡片绑定召回已有结果 |
+| `download_video` | 下载已生成的绑定视频 |
+| `retry_h3_push` | 重推已有归档视频到 H3 |
+| `restart_auto` | 对已证明未提交的任务重新准备和提交 |
+| `regenerate` | 在预算内创建新任务；原任务保留 |
+| `release_account` | 释放当前任务持有的残留机器 lane |
 
-在 `auto_safe` 模式下，代理可以**连续执行多个恢复动作**把异常处理到底，
-一个动作失败就换下一个思路，直到救回或达到动作上限
-（`DOUBAO_AGENT_MAX_ACTIONS`，默认 4，同一动作不会重复尝试）：
+## Windows 进程管理
 
-| 工具 | 作用 | 适用 |
-| --- | --- | --- |
-| `restart_browser` | 重启该账号的受管浏览器 | 浏览器崩溃、上下文失效 |
-| `refresh_page` | 刷新原任务页 | 页面卡死、DOM 异常 |
-| `recall_existing_result` | 按原任务绑定关系召回已有结果 | 等待超时、结果未出现、下载失败 |
-| `retry_h3_push` | 重推已有归档视频到 H3 | 回推失败 |
-| `restart_auto` | 就地重新自动执行（保持原任务 ID） | 提交前失败、确认未花费额度 |
-| `regenerate` | 复制出新任务并重跑（原任务保留） | 原任务已不可救、确认未花费额度 |
+- 自动检测 `claude.exe`、`claude.cmd` 和 npm 全局目录。
+- `.cmd` launcher 通过 `cmd.exe /d /s /c` 启动，避免 `WinError 193`。
+- 子进程使用无窗口标志并在独立进程组内运行。
+- 超时、取消和服务关闭时使用 `taskkill /PID ... /T /F` 清理完整进程树。
+- `data/agent_recovery/processes.jsonl` 记录进程 PID、任务 ID 和一次性 marker；
+  下次启动只终止命令行中仍含该 marker 的残留进程，避免误杀复用 PID 的其他程序。
 
-提交前的参数/模型/素材/提示词/提交按钮类失败，代理会自行修复或重跑；
-带 `SUBMISSION_UNCONFIRMED`、`CONFIRM_*` 等“可能已提交”的异常也会交给代理，
-但它只能做不花钱的动作。
-
-### 仍然必须人工处理（代码强制红线）
-
-下面这些即使放开权限也不会自动执行，是写在策略里的硬边界：
-
-- 登录失效。
-- 验证码、安全验证、人机验证。
-- 账号额度不足（禁止换号或绕过限制）。
-- 无法判断是否已经扣费（`quota_state=unknown`）。
-- 任务已进入 `confirming` / `generating` / `downloading`，
-  或错误码表明可能已提交/已扣费：禁止 `restart_auto` 与 `regenerate`，
-  避免为一次可能已经花过钱的生成再埋单。
-- 已存在归档视频：禁止召回覆盖或重新生成覆盖。
-
-Agent 始终不提供修改提示词、更换图片、切换账号、绕过额度、删除或覆盖视频的工具；
-策略层会拒绝这些动作。`diagnose_only` 模式下完全不执行任何动作。
-
-
-## 上下文与日志
-
-传给模型的内容只有文本和结构化数据，不包含截图、OCR 或视觉识别结果，并会剔除
-`Cookie`、密码、`Authorization`、API Key 等敏感信息。网页内容和助手消息会明确标记
-为不可信数据，不能覆盖系统提示词。
-
-Agent 独立日志：
+## 日志
 
 ```text
 data/agent_recovery/exceptions.jsonl
+data/agent_recovery/processes.jsonl
+data/agent_recovery/cli-<job>-<run>.log
 ```
 
-每条记录包含异常时间、`job_id`、异常类型/代码、诊断结果、修复建议、执行动作、
-恢复是否成功，以及是否需要人工介入。不会修改原有业务数据库表结构。
+`exceptions.jsonl` 包含任务、异常、CLI 路径/退出码/超时、完整有序工具账本、
+额度预算、恢复结果和人工原因。CLI 原始输出只写入每次运行独立日志，并对常见
+凭据格式脱敏。
+
+## 服务重启
+
+- 启动时清理上次运行遗留的 Claude 进程树。
+- 既有启动恢复逻辑重新扫描可恢复的 `needs_review` 任务并重新启动独立 CLI。
+- 任务、会话 URL、session ID、视频卡片序号和额度状态仍由数据库持久化。
+- 已完成、已取消或进入人工待办的任务不会被清除或重新生成。
 
 ## 测试
 
-测试使用 Mock Claude 和离线任务数据，不访问真实豆包账号：
-
 ```powershell
-uv run python -m pytest tests/test_agent_recovery.py -q
+uv run python -m pytest tests/test_agent_recovery.py tests/test_agent_recovery_cli.py -q
 ```

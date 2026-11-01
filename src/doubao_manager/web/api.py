@@ -12,11 +12,11 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import File, Form, Header, HTTPException, UploadFile
+from fastapi import Body, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
@@ -516,6 +516,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         val["web"].pop("result_push_token", None)
         val["task_name"] = val["web"].get("task_name") or ""
         val["video_file_url"] = f"/api/jobs/{jobid}/video" if row["video_path"] else None
+        status_for_job = getattr(recovery_service, "status_for_job", None)
+        if status_for_job is not None:
+            val["recovery"] = status_for_job(jobid)
         if quota: val["quota"] = quota
         return val
 
@@ -524,7 +527,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             row = c.execute(
                 "SELECT j.id,j.account_id,j.status,j.video_path,"
                 "w.phase,w.error_code,w.web_page_url,w.quota_state,"
-                "w.submit_mode,w.result_push_url,w.delivery_state,w.attempt "
+                "w.submit_mode,w.result_push_url,w.delivery_state,w.attempt,"
+                "w.session_url,w.session_id,w.result_card_index,w.assets_json "
                 "FROM jobs j LEFT JOIN video_web_jobs w ON j.id=w.job_id "
                 "WHERE j.id=?",
                 (jobid,),
@@ -534,8 +538,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "WHERE job_id=? ORDER BY id DESC LIMIT 30",
                 (jobid,),
             ).fetchall()
+        job_state = dict(row) if row else {}
+        if row:
+            owner = account_owners.get(row["account_id"] or "")
+            job_state["account_owner_job_id"] = owner or ""
+            job_state["account_owned_by_job"] = owner in (None, jobid)
         return {
-            "job_state": dict(row) if row else {},
+            "job_state": job_state,
             "recent_events": [dict(event) for event in reversed(events)],
         }
 
@@ -2839,7 +2848,103 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "delivery_attempts": attempt,
         }
 
-    async def recovery_restart_browser(jobid: str) -> dict:
+    def recovery_bound_url(item: Mapping) -> str:
+        """Return only a persisted, recognizable Doubao conversation URL."""
+        url = (
+            item.get("web", {}).get("session_url")
+            or item.get("web", {}).get("web_page_url")
+            or ""
+        ).strip()
+        if not url:
+            return ""
+        parsed = urlparse(url)
+        trusted = (
+            parsed.scheme == "https"
+            and parsed.hostname in ("doubao.com", "www.doubao.com")
+        ) or (
+            os.getenv("DOUBAO_TEST_MODE") == "1"
+            and parsed.scheme == "http"
+            and parsed.hostname in ("127.0.0.1", "localhost")
+        )
+        if not trusted or not CHAT_PAGE_URL.search(url):
+            return ""
+        return url
+
+    async def recovery_task_page(
+        jobid: str, *, requested_url: str = ""
+    ) -> tuple[object, dict, dict, str]:
+        """Reuse/open only the task's exact persisted conversation tab."""
+        item = detail(jobid)
+        account_id = item.get("account_id") or ""
+        if not account_id:
+            raise HTTPException(409, "任务所属账号已删除，无法定位任务页")
+        bound_url = recovery_bound_url(item)
+        if not bound_url:
+            raise HTTPException(
+                409,
+                "任务未持久化可识别的豆包会话页；禁止猜测历史标签或其他任务",
+            )
+        if requested_url and requested_url.strip().split("?")[0] != (
+            bound_url.split("?")[0]
+        ):
+            raise HTTPException(
+                409, "请求的页面不是该任务持久化绑定的会话页，已拒绝切换"
+            )
+
+        ctx = await browser(account_id)
+        page = prepared_pages.get(jobid)
+        if page is not None and page.is_closed():
+            prepared_pages.pop(jobid, None)
+            page = None
+        if page is None:
+            key = bound_url.split("?")[0]
+            page = next(
+                (
+                    candidate
+                    for candidate in list(getattr(ctx, "pages", []) or [])
+                    if not candidate.is_closed()
+                    and (getattr(candidate, "url", "") or "").split("?")[0]
+                    == key
+                ),
+                None,
+            )
+        if page is None:
+            page = await ctx.new_page()
+            await page.goto(
+                bound_url, wait_until="domcontentloaded", timeout=60000
+            )
+            await page.wait_for_timeout(800)
+
+        page_title = concise_job_title(
+            item.get("project_id", ""),
+            item.get("episode_id", ""),
+            item.get("shot_id", ""),
+            fallback=item.get("task_name") or jobid,
+        )
+        await set_job_page_title(page, page_title)
+        await page.bring_to_front()
+        try:
+            state = await read_state(page)
+        except Exception:
+            state = {}
+        live_url = (
+            state.get("url") or getattr(page, "url", "") or bound_url
+        ).strip()
+        persisted_url = recovery_bound_url(
+            {"web": {"session_url": live_url}}
+        )
+        if persisted_url:
+            session_url, session_id = session_binding(persisted_url)
+            with db() as c:
+                c.execute(
+                    "UPDATE video_web_jobs SET web_page_url=?,session_url=?,"
+                    "session_id=? WHERE job_id=?",
+                    (session_url, session_url, session_id, jobid),
+                )
+            bound_url = session_url
+        return page, detail(jobid), state, bound_url
+
+    async def recovery_restart_browser(jobid: str, _args=None) -> dict:
         item = detail(jobid)
         account_id = item.get("account_id") or ""
         if not account_id:
@@ -2863,7 +2968,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "detail": "已通过现有账号浏览器功能重新启动" if pages else "浏览器已启动但没有可用页面",
         }
 
-    async def recovery_refresh_page(jobid: str) -> dict:
+    async def recovery_refresh_page(jobid: str, _args=None) -> dict:
         item = detail(jobid)
         account_id = item.get("account_id") or ""
         if not account_id:
@@ -2892,7 +2997,176 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "status": (getattr(page, "url", "") or "").split("?")[0],
         }
 
-    async def recovery_recall_existing_result(jobid: str) -> dict:
+    async def recovery_switch_page(jobid: str, args=None) -> dict:
+        page, item, state, url = await recovery_task_page(
+            jobid, requested_url=str((args or {}).get("url") or "")
+        )
+        return {
+            "success": True,
+            "verified": not page.is_closed(),
+            "recovery_complete": False,
+            "status": item.get("status") or "",
+            "url": state.get("url") or url,
+            "video_card_count": int(state.get("videoCards") or 0),
+            "detail": "已切换并置于前台该任务唯一绑定的豆包会话页",
+        }
+
+    async def recovery_inspect_dom(jobid: str, _args=None) -> dict:
+        page, item, _state, _url = await recovery_task_page(jobid)
+        snapshot = await capture_page_snapshot(page)
+        available = bool(snapshot.get("available"))
+        return {
+            "success": available,
+            "verified": available,
+            "recovery_complete": False,
+            "status": item.get("status") or "",
+            "observation": snapshot,
+            "detail": (
+                "已读取最新任务页 DOM、控件、上传标记和网络错误"
+                if available
+                else f"DOM 读取失败：{snapshot.get('reason') or 'unknown'}"
+            ),
+        }
+
+    async def recovery_dismiss_popup(jobid: str, _args=None) -> dict:
+        page, item, state, _url = await recovery_task_page(jobid)
+        closed = await dismiss_blocking_dialogs(page)
+        return {
+            "success": True,
+            "verified": not page.is_closed(),
+            "recovery_complete": False,
+            "status": item.get("status") or "",
+            "closed_popups": int(closed or 0),
+            "video_card_count": int(state.get("videoCards") or 0),
+            "detail": f"已关闭 {int(closed or 0)} 个带明确关闭控件的干扰弹窗",
+        }
+
+    async def recovery_locate_task_page(jobid: str, _args=None) -> dict:
+        page, item, state, url = await recovery_task_page(jobid)
+        return {
+            "success": True,
+            "verified": not page.is_closed(),
+            "recovery_complete": False,
+            "status": item.get("status") or "",
+            "session_url": url,
+            "session_id": item["web"].get("session_id") or "",
+            "video_card_count": int(state.get("videoCards") or 0),
+            "detail": "已恢复任务与当前豆包会话标签页的绑定",
+        }
+
+    async def recovery_verify_task_status(jobid: str, _args=None) -> dict:
+        item = detail(jobid)
+        page_error = ""
+        state = {}
+        try:
+            _page, item, state, _url = await recovery_task_page(jobid)
+        except Exception as exc:
+            page_error = str(getattr(exc, "detail", "") or exc)[:300]
+        status = item.get("status") or ""
+        downloaded = status == "downloaded"
+        return {
+            "success": True,
+            "verified": bool(status),
+            "recovery_complete": downloaded,
+            "status": status,
+            "phase": item.get("web", {}).get("phase") or "",
+            "video_card_count": int(state.get("videoCards") or 0),
+            "running": bool(state.get("running") or state.get("runningLast")),
+            "page_error": page_error,
+            "detail": (
+                "已核对任务已归档，原业务流程恢复"
+                if downloaded
+                else f"任务当前状态为 {status or 'unknown'}"
+                + (f"；页面读取失败：{page_error}" if page_error else "")
+            ),
+        }
+
+    async def recovery_check_assets(jobid: str, _args=None) -> dict:
+        item = detail(jobid)
+        assets = item.get("web", {}).get("assets") or {}
+        asset_ids = [
+            value
+            for value in (
+                [assets.get("first_frame_asset_id")]
+                + [assets.get("last_frame_asset_id")]
+                + list(assets.get("reference_asset_ids") or [])
+            )
+            if value
+        ]
+        checked = []
+        with db() as c:
+            for asset_id in asset_ids:
+                row = c.execute(
+                    "SELECT stored_path,sha256 FROM video_web_assets WHERE id=?",
+                    (asset_id,),
+                ).fetchone()
+                exists = False
+                if row:
+                    try:
+                        exists = resolved_path(
+                            row["stored_path"], asset_dir
+                        ).is_file()
+                    except Exception:
+                        exists = False
+                checked.append(
+                    {
+                        "asset_id": asset_id,
+                        "exists": exists,
+                        "sha256_present": bool(row and row["sha256"]),
+                    }
+                )
+        missing = [entry["asset_id"] for entry in checked if not entry["exists"]]
+        return {
+            "success": not missing,
+            "verified": True,
+            "recovery_complete": False,
+            "status": item.get("status") or "",
+            "checked_assets": checked,
+            "detail": (
+                "全部任务素材均存在"
+                if not missing
+                else f"缺少 {len(missing)} 个任务素材：{', '.join(missing)}"
+            ),
+        }
+
+    async def recovery_download_video(jobid: str, _args=None) -> dict:
+        return await recovery_recall_existing_result(jobid)
+
+    async def recovery_release_account(jobid: str, _args=None) -> dict:
+        item = detail(jobid)
+        account_id = item.get("account_id") or ""
+        if not account_id:
+            return {
+                "success": False,
+                "verified": False,
+                "recovery_complete": False,
+                "detail": "任务所属账号已删除，无法释放占用",
+            }
+        async with account_condition:
+            owner = account_owners.get(account_id)
+            if owner and owner != jobid:
+                return {
+                    "success": False,
+                    "verified": True,
+                    "recovery_complete": False,
+                    "detail": f"账号由其他任务 {owner} 占用，拒绝抢占释放",
+                }
+        await release_account_slot(jobid, account_id)
+        async with account_condition:
+            released = account_owners.get(account_id) != jobid
+        return {
+            "success": released,
+            "verified": released,
+            "recovery_complete": False,
+            "status": item.get("status") or "",
+            "detail": (
+                "已释放该任务持有的机器账号 lane；恢复租约仍保留到本次恢复结束"
+                if released
+                else "未能释放账号占用"
+            ),
+        }
+
+    async def recovery_recall_existing_result(jobid: str, _args=None) -> dict:
         before = detail(jobid)
         if before.get("status") == "downloaded":
             return {
@@ -2929,7 +3203,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             ),
         }
 
-    async def recovery_retry_h3_push(jobid: str) -> dict:
+    async def recovery_retry_h3_push(jobid: str, _args=None) -> dict:
         result = await push_result(jobid)
         return {
             "success": bool(result.get("ok")),
@@ -2938,7 +3212,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "status": result.get("delivery_state") or "",
         }
 
-    async def recovery_restart_auto(jobid: str) -> dict:
+    async def recovery_restart_auto(jobid: str, _args=None) -> dict:
         """Agent action: restart the current job in automatic mode (same job id)."""
         before = detail(jobid)
         if before.get("status") == "downloaded":
@@ -2976,7 +3250,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             ),
         }
 
-    async def recovery_regenerate(jobid: str) -> dict:
+    async def recovery_regenerate(jobid: str, _args=None) -> dict:
         """Agent action: clone the failed job into a new queued job and start it."""
         original = detail(jobid)
         if original["status"] not in ("needs_review", "failed", "queued"):
@@ -3047,15 +3321,45 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             backend=RecoveryBackend(
                 restart_browser=recovery_restart_browser,
                 refresh_page=recovery_refresh_page,
+                switch_page=recovery_switch_page,
+                inspect_dom=recovery_inspect_dom,
+                dismiss_popup=recovery_dismiss_popup,
+                locate_task_page=recovery_locate_task_page,
+                verify_task_status=recovery_verify_task_status,
+                check_assets=recovery_check_assets,
                 recall_existing_result=recovery_recall_existing_result,
+                download_video=recovery_download_video,
                 retry_h3_push=recovery_retry_h3_push,
                 restart_auto=recovery_restart_auto,
                 regenerate=recovery_regenerate,
+                release_account=recovery_release_account,
             ),
             context_loader=load_recovery_context,
             log_dir=base / "data" / "agent_recovery",
         )
     app.state.video_recovery_service = recovery_service
+
+    @app.post(
+        "/api/internal/agent-recovery/tool",
+        include_in_schema=False,
+    )
+    async def agent_recovery_tool_bridge(
+        payload: dict = Body(...),
+        x_doubao_agent_token: Optional[str] = Header(None),
+    ):
+        """Token-scoped bridge used only by the recovery MCP subprocess."""
+        execute_tool = getattr(recovery_service, "execute_tool", None)
+        if execute_tool is None:
+            raise HTTPException(503, "恢复工具桥未启用")
+        try:
+            return await execute_tool(
+                job_id=str(payload.get("job_id") or ""),
+                token=str(x_doubao_agent_token or ""),
+                tool=str(payload.get("tool") or ""),
+                arguments=payload.get("arguments") or {},
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, str(exc)) from exc
 
     recoverable_existing_codes = {
         "WORKER_EXCEPTION",

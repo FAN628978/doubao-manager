@@ -902,7 +902,7 @@ def test_download_result_requires_review_and_specific_page(tmp_path, monkeypatch
         assert client.post(endpoint + '?confirm_review=true').status_code == 422
 
 
-def test_download_result_downloads_and_archives_from_page(tmp_path, monkeypatch):
+def test_download_result_archives_bound_video_without_duration_gate(tmp_path, monkeypatch):
     from fastapi import FastAPI
     import web_api
 
@@ -959,7 +959,9 @@ def test_download_result_downloads_and_archives_from_page(tmp_path, monkeypatch)
 
     monkeypatch.setattr(web_api, 'read_state', fake_read_state)
     monkeypatch.setattr(web_api, 'download_result_video', fake_download_result)
-    monkeypatch.setattr(web_api, 'media_duration_seconds', lambda _path: 4.0)
+    # Duration is deliberately different from the requested 4 seconds. The
+    # persisted card binding is authoritative; archival must not reject it.
+    monkeypatch.setattr(web_api, 'media_duration_seconds', lambda _path: 10.1)
 
     app2 = FastAPI()
     web_api.mount_video_api(app2, db=application.db, get_account=application.get_account,

@@ -163,6 +163,13 @@ async def lifespan(app: FastAPI):
     from web_api import recover_interrupted_jobs
     recover_interrupted_jobs(db, base_dir=BASE_DIR)
     playwright_runtime = await async_playwright().start()
+    recovery_service = getattr(app.state, "video_recovery_service", None)
+    recovery_cleanup = getattr(recovery_service, "recover_after_restart", None)
+    if recovery_cleanup is not None:
+        try:
+            await recovery_cleanup()
+        except Exception:
+            logger.exception("Could not clean stale Claude recovery processes")
     resume_recovery = getattr(app.state, "video_resume_recovery", None)
     if resume_recovery is not None:
         try:
@@ -196,6 +203,12 @@ async def lifespan(app: FastAPI):
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
         recover_interrupted_jobs(db, base_dir=BASE_DIR)
+    recovery_shutdown = getattr(recovery_service, "shutdown", None)
+    if recovery_shutdown is not None:
+        try:
+            await recovery_shutdown()
+        except Exception:
+            logger.exception("Could not stop Claude recovery processes")
     idle_closes = list(getattr(app.state, "video_idle_close_tasks", {}).values())
     for task in idle_closes:
         task.cancel()
@@ -929,6 +942,7 @@ async def list_jobs():
         "dispatched_at": r["dispatched_at"] or "",
     } for r in web_rows}
     prepared_pages = getattr(app.state, "video_prepared_pages", {})
+    recovery_service = getattr(app.state, "video_recovery_service", None)
     out = []
     for row in rows:
         meta = web_meta.get(row["id"])
@@ -939,7 +953,7 @@ async def list_jobs():
             has_live_page = live_page is not None and not live_page.is_closed()
         except Exception:
             has_live_page = False
-        out.append({**job_row(row),
+        item = {**job_row(row),
                     "task_name": meta["task_name"] if meta else "",
                     "is_web_generation": bool(meta),
                     "submit_mode": meta["submit_mode"] if meta else "auto",
@@ -962,7 +976,14 @@ async def list_jobs():
                     "dispatched_at": meta["dispatched_at"] if meta else "",
                     # 用户手动归档后才算“已归档”；否则已下载完成的任务留在“处理完”。
                     "archived": bool(meta and meta["archived_at"]),
-                    "manual_confirm_sent": bool(row["status"] == "needs_review" and quota_state in ("reserved", "unknown"))})
+                    "manual_confirm_sent": bool(row["status"] == "needs_review" and quota_state in ("reserved", "unknown"))}
+        status_for_job = getattr(recovery_service, "status_for_job", None)
+        if status_for_job is not None:
+            try:
+                item["recovery"] = status_for_job(row["id"])
+            except Exception:
+                item["recovery"] = {}
+        out.append(item)
     return out
 
 
@@ -1009,9 +1030,12 @@ async def bulk_delete_jobs(payload: JobBulkDelete):
         ).fetchall()
 
     running = getattr(app.state, "video_pending", {})
+    recovery_service = getattr(app.state, "video_recovery_service", None)
+    is_recovering = getattr(recovery_service, "job_active", None)
     busy = [row["id"] for row in rows
             if row["status"] in JOB_DELETE_BLOCKED_STATUSES
-            or (row["id"] in running and not running[row["id"]].done())]
+            or (row["id"] in running and not running[row["id"]].done())
+            or (is_recovering is not None and is_recovering(row["id"]))]
     if busy:
         raise HTTPException(status_code=409, detail=f"进行中的任务不能删除：{', '.join(busy[:5])}")
 

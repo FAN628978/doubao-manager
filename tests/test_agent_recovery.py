@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,11 +12,16 @@ from fastapi.testclient import TestClient
 
 import app as application
 import web_api
-from agent_recovery.client import AgentConfig, ClaudeAPIError
+from agent_recovery.cli import CLIProcessResult
+from agent_recovery.config import AgentConfig
 from agent_recovery.context import build_exception_context, error_code_from_exception
 from agent_recovery.policy import RecoveryPolicy
 from agent_recovery.service import ExceptionRecoveryService
-from agent_recovery.tools import RecoveryBackend
+from agent_recovery.tools import (
+    TOOL_DEFINITIONS,
+    RecoveryBackend,
+    RecoveryToolExecutor,
+)
 from doubao_manager.web import api as api_impl
 
 
@@ -28,34 +34,35 @@ class StubRecoveryService:
         return True
 
 
-class FakeClaudeClient:
-    def __init__(self, responses=None, error=None):
-        self.responses = list(responses or [])
-        self.error = error
-        self.calls = []
-
-    async def create_message(self, *, system, messages, tools=None):
-        self.calls.append({"system": system, "messages": messages, "tools": tools})
-        if self.error is not None:
-            raise self.error
-        return self.responses.pop(0)
-
-
 class RecordingBackend:
     def __init__(self, fail_first: bool = False):
         self.calls = {
             "restart_browser": [],
+            "switch_page": [],
             "refresh_page": [],
+            "inspect_dom": [],
+            "dismiss_popup": [],
+            "locate_task_page": [],
+            "verify_task_status": [],
+            "check_assets": [],
             "recall_existing_result": [],
+            "download_video": [],
             "retry_h3_push": [],
             "restart_auto": [],
             "regenerate": [],
+            "release_account": [],
         }
+        self.arguments = {name: [] for name in self.calls}
         self.fail_first = fail_first
+        self.results = {}
 
     def _callback(self, name):
-        async def run(jobid):
+        async def run(jobid, arguments=None):
             self.calls[name].append(jobid)
+            self.arguments[name].append(dict(arguments or {}))
+            if name in self.results:
+                result = self.results[name]
+                return result(jobid, arguments) if callable(result) else dict(result)
             success = not (self.fail_first and name == "refresh_page")
             return {
                 "success": success,
@@ -68,40 +75,23 @@ class RecordingBackend:
     def as_backend(self):
         return RecoveryBackend(
             restart_browser=self._callback("restart_browser"),
+            switch_page=self._callback("switch_page"),
             refresh_page=self._callback("refresh_page"),
+            inspect_dom=self._callback("inspect_dom"),
+            dismiss_popup=self._callback("dismiss_popup"),
+            locate_task_page=self._callback("locate_task_page"),
+            verify_task_status=self._callback("verify_task_status"),
+            check_assets=self._callback("check_assets"),
             recall_existing_result=self._callback("recall_existing_result"),
+            download_video=self._callback("download_video"),
             retry_h3_push=self._callback("retry_h3_push"),
             restart_auto=self._callback("restart_auto"),
             regenerate=self._callback("regenerate"),
+            release_account=self._callback("release_account"),
         )
 
 
-def _text_response(payload):
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": json.dumps(payload, ensure_ascii=False),
-            }
-        ]
-    }
-
-
-def _tool_response(name, tool_id="tool_1"):
-    return {
-        "content": [
-            {
-                "type": "tool_use",
-                "id": tool_id,
-                "name": name,
-                "input": {},
-            }
-        ]
-    }
-
-
-def _service(tmp_path, client, backend=None, state=None):
-    backend = backend or RecordingBackend().as_backend()
+def _state_for_service(**overrides):
     job_state = {
         "id": "job_agent",
         "account_id": "account_1",
@@ -114,7 +104,13 @@ def _service(tmp_path, client, backend=None, state=None):
         "video_path": "",
         "result_push_url": "",
     }
-    job_state.update(state or {})
+    job_state.update(overrides)
+    return job_state
+
+
+def _service(tmp_path, runner, backend=None, state=None):
+    backend = backend or RecordingBackend().as_backend()
+    job_state = _state_for_service(**(state or {}))
     return ExceptionRecoveryService(
         backend=backend,
         context_loader=lambda _jobid: {
@@ -125,17 +121,18 @@ def _service(tmp_path, client, backend=None, state=None):
             ],
         },
         log_dir=tmp_path / "agent_logs",
-        client_factory=lambda _config: client,
+        cli_runner_factory=lambda _config: runner,
     )
 
 
-def _configure_agent(monkeypatch, mode="diagnose_only"):
-    monkeypatch.setenv("DOUBAO_AGENT_ENABLED", "true")
-    monkeypatch.setenv("DOUBAO_AGENT_MODE", mode)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("ANTHROPIC_MODEL", "test-model")
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://localhost:60007")
+def _configure_cli(monkeypatch, tmp_path):
+    shim = tmp_path / ("claude.cmd" if os.name == "nt" else "claude")
+    shim.write_text("@echo off\n", encoding="utf-8")
+    if os.name != "nt":
+        shim.chmod(0o755)
+    monkeypatch.setenv("DOUBAO_CLAUDE_CLI_PATH", str(shim))
     monkeypatch.setenv("DOUBAO_AGENT_DEDUPE_SECONDS", "0")
+    return shim
 
 
 def _prepare_db(tmp_path, monkeypatch):
@@ -264,7 +261,7 @@ def _insert_queued_job(job_id, submit_mode):
 
 @pytest.mark.parametrize("error_code", ["LOGIN_REQUIRED", "VERIFICATION_REQUIRED"])
 def test_policy_forces_login_and_captcha_to_manual(error_code):
-    policy = RecoveryPolicy("auto_safe")
+    policy = RecoveryPolicy("autonomous")
     context = {
         "error_code": error_code,
         "error_message": "page requires human action",
@@ -285,13 +282,12 @@ def test_policy_forces_login_and_captcha_to_manual(error_code):
     "error_code,message",
     [
         ("SUBMISSION_UNCONFIRMED", "点击后无法确认是否发送成功"),
-        ("CONFIRM_NOT_SENT", "确认生成的消息没有发出去"),
         ("UNKNOWN", "是否已经扣费不确定"),
     ],
 )
 def test_uncertain_submit_confirm_or_quota_never_regenerates(error_code, message):
     """提交/确认/扣费不确定时可以继续救（比如召回），但绝不能再花一次钱。"""
-    policy = RecoveryPolicy("auto_safe")
+    policy = RecoveryPolicy("autonomous")
     context = {
         "error_code": error_code,
         "error_message": message,
@@ -305,6 +301,20 @@ def test_uncertain_submit_confirm_or_quota_never_regenerates(error_code, message
     # 但不需要再花额度的动作仍然允许，交给策略继续救。
     assert policy.decide("restart_browser", context).allowed
     assert policy.decide("refresh_page", context).allowed
+
+
+def test_confirmed_unsubmitted_task_can_be_submitted_again():
+    policy = RecoveryPolicy("autonomous", spend_budget=1)
+    context = {
+        "error_code": "CONFIRM_NOT_SENT",
+        "error_message": "确认生成的消息没有发出去",
+        "quota_state": "reserved",
+        "account_id": "account_1",
+        "last_operational_stage": "submitting",
+        "dom_state": {},
+    }
+    assert policy.decide("restart_auto", context).allowed
+    assert policy.decide("regenerate", context).allowed
 
 
 def test_exception_context_has_upload_state_and_redacts_secrets():
@@ -368,26 +378,31 @@ def test_error_code_classifier_uses_http_exception_detail(exc, expected):
 
 
 def test_account_pending_tracks_agent_until_recovery_finishes(tmp_path, monkeypatch):
-    _configure_agent(monkeypatch)
+    _configure_cli(monkeypatch, tmp_path)
     started = None
     release = None
 
-    class BlockingClient:
-        async def create_message(self, **_kwargs):
+    class BlockingRunner:
+        async def run(self, *, job_id, token, prompt, on_started):
+            on_started(501, token[:12], str(tmp_path / "agent_logs" / "cli.log"))
             started.set()
             await release.wait()
-            return _text_response(
-                {
+            return CLIProcessResult(
+                exit_code=0,
+                timed_out=False,
+                diagnosis={
                     "summary": "browser issue",
                     "root_cause": "page closed",
                     "confidence": 0.8,
                     "recovery_suggestion": "refresh page",
+                    "recovery_complete": False,
                     "needs_human": True,
                     "manual_reason": "verify manually",
-                }
+                },
+                process_id=501,
             )
 
-    service = _service(tmp_path, BlockingClient())
+    service = _service(tmp_path, BlockingRunner())
     monkeypatch.setattr(
         application.app.state,
         "video_recovery_service",
@@ -788,8 +803,12 @@ def test_refresh_recovery_never_guesses_last_browser_tab(tmp_path, monkeypatch):
 
 def test_disabled_agent_does_not_call_claude_or_write_log(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_AGENT_ENABLED", "false")
-    client = FakeClaudeClient(error=AssertionError("must not be called"))
-    service = _service(tmp_path, client)
+
+    class MustNotRun:
+        async def run(self, **_kwargs):
+            raise AssertionError("must not be called")
+
+    service = _service(tmp_path, MustNotRun())
     assert not service.notify_exception(
         job_id="job_disabled",
         error_type="ReviewNeeded",
@@ -797,28 +816,34 @@ def test_disabled_agent_does_not_call_claude_or_write_log(tmp_path, monkeypatch)
         error_message="upload failed",
     )
     asyncio.run(service.wait_for_idle())
-    assert client.calls == []
     assert not service.log_path.exists()
 
 
-def test_agent_config_reads_local_claude_settings(tmp_path, monkeypatch):
+def test_cli_config_reads_only_recovery_settings(tmp_path, monkeypatch):
     for name in (
         "DOUBAO_AGENT_ENABLED",
-        "DOUBAO_AGENT_MODE",
+        "DOUBAO_CLAUDE_CLI_PATH",
+        "DOUBAO_AGENT_SPEND_BUDGET",
+        "DOUBAO_AGENT_CLI_TIMEOUT_SECONDS",
+        "DOUBAO_AGENT_CLI_PERMISSION_MODE",
+        "DOUBAO_AGENT_PYTHON_PATH",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_MODEL",
         "ANTHROPIC_BASE_URL",
     ):
         monkeypatch.delenv(name, raising=False)
+    shim = tmp_path / ("claude.cmd" if os.name == "nt" else "claude")
+    shim.write_text("@echo off\n", encoding="utf-8")
     settings_path = tmp_path / "settings.local.json"
     settings_path.write_text(
         json.dumps(
             {
                 "env": {
                     "DOUBAO_AGENT_ENABLED": "true",
-                    "DOUBAO_AGENT_MODE": "auto_safe",
+                    "DOUBAO_CLAUDE_CLI_PATH": str(shim),
+                    "DOUBAO_AGENT_SPEND_BUDGET": "0",
                     "ANTHROPIC_API_KEY": "file-key",
-                    "ANTHROPIC_MODEL": "file-model",
+                    "ANTHROPIC_MODEL": "deepseek-v4-flash",
                     "ANTHROPIC_BASE_URL": "http://localhost:60007",
                 }
             }
@@ -828,32 +853,53 @@ def test_agent_config_reads_local_claude_settings(tmp_path, monkeypatch):
 
     config = AgentConfig.from_env(settings_path)
     assert config.enabled is True
-    assert config.mode == "auto_safe"
-    assert config.api_key == "file-key"
-    assert config.model == "file-model"
-    assert config.base_url == "http://localhost:60007"
+    assert config.mode == "autonomous"
+    assert config.cli_path == str(shim.resolve())
+    assert config.spend_budget == 0
+    assert not hasattr(config, "api_key")
+    assert not hasattr(config, "model")
+    assert not hasattr(config, "base_url")
 
-    monkeypatch.setenv("ANTHROPIC_MODEL", "env-model")
-    assert AgentConfig.from_env(settings_path).model == "env-model"
+    monkeypatch.setenv("DOUBAO_AGENT_SPEND_BUDGET", "7")
+    assert AgentConfig.from_env(settings_path).spend_budget == 7
 
 
-def test_agent_default_settings_path_targets_project_root():
-    from agent_recovery import client
+def test_cli_default_settings_path_targets_project_root():
+    from agent_recovery import config
 
     expected = (
         Path(__file__).resolve().parents[1]
         / ".claude"
         / "settings.local.json"
     )
-    assert client.LOCAL_SETTINGS_PATH == expected
+    assert config.LOCAL_SETTINGS_PATH == expected
 
 
-def test_agent_timeout_is_logged_without_changing_business_state(
+def test_cli_timeout_is_logged_without_changing_business_state(
     tmp_path, monkeypatch
 ):
-    _configure_agent(monkeypatch)
-    client = FakeClaudeClient(error=ClaudeAPIError("Claude API 请求超时"))
-    service = _service(tmp_path, client)
+    _configure_cli(monkeypatch, tmp_path)
+
+    class TimeoutRunner:
+        async def run(self, *, job_id, token, prompt, on_started):
+            on_started(502, token[:12], str(tmp_path / "agent_logs" / "cli.log"))
+            return CLIProcessResult(
+                exit_code=1,
+                timed_out=True,
+                diagnosis={
+                    "summary": "",
+                    "root_cause": "",
+                    "confidence": 0,
+                    "recovery_suggestion": "",
+                    "recovery_complete": False,
+                    "needs_human": True,
+                    "manual_reason": "CLI 超时",
+                },
+                error="Claude CLI 运行超过 1 秒，进程树已终止",
+                process_id=502,
+            )
+
+    service = _service(tmp_path, TimeoutRunner())
     async def run():
         assert service.notify_exception(
             job_id="job_timeout",
@@ -866,29 +912,56 @@ def test_agent_timeout_is_logged_without_changing_business_state(
     asyncio.run(run())
     record = json.loads(service.log_path.read_text(encoding="utf-8").splitlines()[0])
     assert record["job_id"] == "job_timeout"
-    assert "超时" in record["agent_error"]
+    assert record["cli_timed_out"] is True
     assert record["needs_human"] is True
 
 
-def test_agent_executes_only_the_policy_approved_existing_recall(tmp_path, monkeypatch):
-    _configure_agent(monkeypatch, mode="auto_safe")
+def test_cli_executes_only_the_policy_approved_existing_recall(tmp_path, monkeypatch):
+    _configure_cli(monkeypatch, tmp_path)
     backend = RecordingBackend()
-    client = FakeClaudeClient(
-        responses=[
-            _tool_response("recall_existing_result"),
-            _text_response(
-                {
+    state = _state_for_service()
+
+    class RecallRunner:
+        async def run(self, *, job_id, token, prompt, on_started):
+            on_started(503, token[:12], str(tmp_path / "agent_logs" / "cli.log"))
+            holder["service"]._tool_sessions[job_id].context["status"] = (
+                "needs_review"
+            )
+            result = await holder["service"].execute_tool(
+                job_id=job_id,
+                token=token,
+                tool="recall_existing_result",
+                arguments={},
+            )
+            assert result["success"] is True
+            state["status"] = "downloaded"
+            return CLIProcessResult(
+                exit_code=0,
+                timed_out=False,
+                diagnosis={
                     "summary": "download worker failed",
                     "root_cause": "original result was not archived",
                     "confidence": 0.9,
                     "recovery_suggestion": "use existing recall",
+                    "recovery_complete": True,
                     "needs_human": False,
                     "manual_reason": "",
-                }
-            ),
-        ]
+                },
+                process_id=503,
+            )
+
+    holder = {}
+    service = ExceptionRecoveryService(
+        backend=backend.as_backend(),
+        context_loader=lambda _jobid: {
+            "job_state": state,
+            "recent_events": [],
+        },
+        log_dir=tmp_path / "agent_logs",
+        cli_runner_factory=lambda _config: RecallRunner(),
     )
-    service = _service(tmp_path, client, backend=backend.as_backend())
+    holder["service"] = service
+
     async def run():
         assert service.notify_exception(
             job_id="job_recall",
@@ -907,33 +980,52 @@ def test_agent_executes_only_the_policy_approved_existing_recall(tmp_path, monke
 
 
 def test_h3_retry_tool_only_calls_h3_delivery_backend(tmp_path, monkeypatch):
-    _configure_agent(monkeypatch, mode="auto_safe")
+    _configure_cli(monkeypatch, tmp_path)
     backend = RecordingBackend()
-    client = FakeClaudeClient(
-        responses=[
-            _tool_response("retry_h3_push"),
-            _text_response(
-                {
+    state = _state_for_service(
+        error_code="RESULT_PUSH_FAILED",
+        video_path="data/videos/job_h3.mp4",
+        result_push_url="http://127.0.0.1:3013/push",
+    )
+
+    class H3Runner:
+        async def run(self, *, job_id, token, prompt, on_started):
+            on_started(504, token[:12], str(tmp_path / "agent_logs" / "cli.log"))
+            result = await holder["service"].execute_tool(
+                job_id=job_id,
+                token=token,
+                tool="retry_h3_push",
+                arguments={},
+            )
+            assert result["success"] is True
+            state["status"] = "downloaded"
+            return CLIProcessResult(
+                exit_code=0,
+                timed_out=False,
+                diagnosis={
                     "summary": "H3 delivery failed",
                     "root_cause": "temporary callback failure",
                     "confidence": 0.8,
                     "recovery_suggestion": "retry the existing outbox",
+                    "recovery_complete": True,
                     "needs_human": False,
                     "manual_reason": "",
-                }
-            ),
-        ]
-    )
-    service = _service(
-        tmp_path,
-        client,
+                },
+                process_id=504,
+            )
+
+    holder = {}
+    service = ExceptionRecoveryService(
         backend=backend.as_backend(),
-        state={
-            "error_code": "RESULT_PUSH_FAILED",
-            "video_path": "data/videos/job_h3.mp4",
-            "result_push_url": "http://127.0.0.1:3013/push",
+        context_loader=lambda _jobid: {
+            "job_state": state,
+            "recent_events": [],
         },
+        log_dir=tmp_path / "agent_logs",
+        cli_runner_factory=lambda _config: H3Runner(),
     )
+    holder["service"] = service
+
     async def run():
         assert service.notify_exception(
             job_id="job_h3",
@@ -990,10 +1082,14 @@ def test_worker_exception_notifies_agent_after_original_state_update(
         assert service.calls[0]["error_code"] == "UPLOAD_UNVERIFIED"
 
 
-def test_claude_timeout_cannot_overwrite_original_exception(tmp_path, monkeypatch):
+def test_cli_timeout_cannot_overwrite_original_exception(tmp_path, monkeypatch):
     _prepare_db(tmp_path, monkeypatch)
-    _configure_agent(monkeypatch)
-    client = FakeClaudeClient(error=ClaudeAPIError("Claude API 请求超时"))
+    _configure_cli(monkeypatch, tmp_path)
+
+    class TimeoutRunner:
+        async def run(self, **_kwargs):
+            raise RuntimeError("Claude CLI 运行超过 1 秒，进程树已终止")
+
     backend = RecordingBackend().as_backend()
     service = ExceptionRecoveryService(
         backend=backend,
@@ -1002,7 +1098,7 @@ def test_claude_timeout_cannot_overwrite_original_exception(tmp_path, monkeypatc
             "recent_events": [],
         },
         log_dir=tmp_path / "agent_logs",
-        client_factory=lambda _config: client,
+        cli_runner_factory=lambda _config: TimeoutRunner(),
     )
 
     async def fake_perform(*_args, **_kwargs):
@@ -1205,22 +1301,34 @@ def test_agent_recovers_download_failure_using_existing_recall(
         serialize=application.job_row,
     )
     service = bridge.state.video_recovery_service
-    _configure_agent(monkeypatch, mode="auto_safe")
-    service.client_factory = lambda _config: FakeClaudeClient(
-        responses=[
-            _tool_response("recall_existing_result"),
-            _text_response(
-                {
+    _configure_cli(monkeypatch, tmp_path)
+
+    class RecallRunner:
+        async def run(self, *, job_id, token, prompt, on_started):
+            on_started(505, token[:12], str(service.log_dir / "cli.log"))
+            result = await service.execute_tool(
+                job_id=job_id,
+                token=token,
+                tool="recall_existing_result",
+                arguments={},
+            )
+            assert result["success"] is True
+            return CLIProcessResult(
+                exit_code=0,
+                timed_out=False,
+                diagnosis={
                     "summary": "原任务下载失败，已有会话和结果卡片",
                     "root_cause": "下载 worker 异常",
                     "confidence": 0.9,
                     "recovery_suggestion": "调用现有召回流程重新下载",
+                    "recovery_complete": True,
                     "needs_human": False,
                     "manual_reason": "",
-                }
-            ),
-        ]
-    )
+                },
+                process_id=505,
+            )
+
+    service.cli_runner_factory = lambda _config: RecallRunner()
 
     async def run_agent():
         assert service.notify_exception(
@@ -1241,26 +1349,7 @@ def test_agent_recovers_download_failure_using_existing_recall(
     assert record["needs_human"] is False
 
 
-# ---- 放开权限后的行为 ----
-
-def _agent_for(context, responses, backend=None, mode="auto_safe"):
-    from agent_recovery.agent import RecoveryAgent
-    from agent_recovery.tools import RecoveryToolExecutor
-
-    policy = RecoveryPolicy(mode)
-    recorder = backend or RecordingBackend()
-    executor = RecoveryToolExecutor(recorder.as_backend(), policy)
-    client = FakeClaudeClient(responses)
-    return RecoveryAgent(client, executor, policy), recorder, client
-
-
-def _tool_use(name, tool_id="t1"):
-    return {"type": "tool_use", "id": tool_id, "name": name, "input": {}}
-
-
-def _text_block(text='{"summary":"ok","needs_human":false}'):
-    return {"type": "text", "text": text}
-
+# ---- Autonomous CLI decision boundaries ----
 
 def _pre_submit_context(**overrides):
     context = {
@@ -1270,6 +1359,7 @@ def _pre_submit_context(**overrides):
         "error_message": "page.goto net::ERR_CONNECTION_RESET",
         "quota_state": "reserved",
         "last_operational_stage": "configuring",
+        "page_url": "https://www.doubao.com/chat/example",
         "has_archived_video": False,
         "has_result_push_target": False,
         "dom_state": {},
@@ -1278,53 +1368,78 @@ def _pre_submit_context(**overrides):
     return context
 
 
-def test_agent_can_chain_multiple_recovery_actions():
-    """放开后：一个动作没救回来，代理可以继续尝试下一个。"""
+def test_autonomous_executor_can_chain_multiple_recovery_actions():
     context = _pre_submit_context()
-    responses = [
-        {"content": [_tool_use("refresh_page", "t1")]},
-        {"content": [_tool_use("restart_browser", "t2")]},
-        {"content": [_text_block()]},
-    ]
-    agent, recorder, client = _agent_for(context, responses)
+    recorder = RecordingBackend()
+    executor = RecoveryToolExecutor(
+        recorder.as_backend(), RecoveryPolicy("autonomous", spend_budget=1)
+    )
 
-    result = asyncio.run(agent.diagnose(context, mode="auto_safe"))
+    async def run():
+        results = []
+        for action in (
+            "refresh_page",
+            "restart_browser",
+            "recall_existing_result",
+        ):
+            results.append(await executor.execute(action, context))
+        return results
 
+    results = asyncio.run(run())
     assert recorder.calls["refresh_page"] == ["job_1"]
     assert recorder.calls["restart_browser"] == ["job_1"]
-    assert result["recovery_success"] is True
-    assert len(result["actions"]) == 2
-    # 成功后不再把工具传回去，避免代理继续折腾。
-    assert client.calls[-1]["tools"] is None
+    assert recorder.calls["recall_existing_result"] == ["job_1"]
+    assert all(item["executed"] for item in results)
 
 
-def test_agent_stops_after_max_actions_and_never_repeats_one():
+def test_autonomous_executor_allows_limited_repeats(monkeypatch):
+    monkeypatch.setenv("DOUBAO_AGENT_MAX_ACTION_ATTEMPTS", "2")
     context = _pre_submit_context()
-    responses = [
-        {"content": [_tool_use("refresh_page", "t1")]},
-        {"content": [_tool_use("refresh_page", "t2")]},
-        {"content": [_tool_use("restart_browser", "t3")]},
-        {"content": [_tool_use("recall_existing_result", "t4")]},
-        {"content": [_tool_use("restart_auto", "t5")]},
-        {"content": [_tool_use("regenerate", "t6")]},
-        {"content": [_text_block()]},
-    ]
     recorder = RecordingBackend()
-    recorder.fail_first = True  # 让 refresh_page 失败，逼迫继续尝试
-    agent, recorder, _ = _agent_for(context, responses, backend=recorder)
+    recorder.results["refresh_page"] = {
+        "success": True,
+        "verified": True,
+        "recovery_complete": False,
+        "detail": "page refreshed but flow still needs a decision",
+    }
+    executor = RecoveryToolExecutor(
+        recorder.as_backend(), RecoveryPolicy("autonomous", spend_budget=1)
+    )
 
-    result = asyncio.run(agent.diagnose(context, mode="auto_safe"))
+    async def run():
+        return [
+            await executor.execute("refresh_page", context)
+            for _ in range(3)
+        ]
 
-    # 同一个动作只执行一次。
-    assert len(recorder.calls["refresh_page"]) == 1
-    executed = [item["name"] for item in result["actions"]]
-    assert executed.count("refresh_page") == 1
-    # 总执行次数受上限约束。
-    assert len(executed) <= RecoveryPolicy("auto_safe").max_actions()
+    results = asyncio.run(run())
+    assert len(recorder.calls["refresh_page"]) == 2
+    assert [item["executed"] for item in results] == [True, True, False]
+    assert results[-1]["detail"]
+
+
+def test_spend_budget_limits_repeat_generation_attempts():
+    context = _pre_submit_context()
+    recorder = RecordingBackend()
+    executor = RecoveryToolExecutor(
+        recorder.as_backend(), RecoveryPolicy("autonomous", spend_budget=1)
+    )
+
+    async def run():
+        first = await executor.execute("restart_auto", context)
+        second = await executor.execute("regenerate", context)
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert first["executed"] is True
+    assert second["executed"] is False
+    assert second["detail"]
+    assert len(recorder.calls["restart_auto"]) == 1
+    assert recorder.calls["regenerate"] == []
 
 
 def test_regenerate_allowed_before_spend_but_blocked_after_spend():
-    policy = RecoveryPolicy("auto_safe")
+    policy = RecoveryPolicy("autonomous", spend_budget=1)
     before = _pre_submit_context()
     assert policy.decide("regenerate", before).allowed
     assert policy.decide("restart_auto", before).allowed
@@ -1332,14 +1447,25 @@ def test_regenerate_allowed_before_spend_but_blocked_after_spend():
     after = _pre_submit_context(last_operational_stage="generating")
     assert not policy.decide("regenerate", after).allowed
     assert not policy.decide("restart_auto", after).allowed
-    assert "消耗额度" in policy.decide("regenerate", after).reason
+    assert policy.decide("regenerate", after).reason
 
     unknown = _pre_submit_context(quota_state="unknown")
     assert not policy.decide("regenerate", unknown).allowed
 
 
+def test_account_owned_by_another_job_blocks_browser_actions():
+    policy = RecoveryPolicy("autonomous", spend_budget=1)
+    context = _pre_submit_context(
+        account_owned_by_job=False,
+        account_owner_job_id="job_other",
+    )
+    assert "job_other" in policy.manual_reason(context)
+    for action in ("restart_browser", "switch_page", "refresh_page"):
+        assert not policy.decide(action, context).allowed
+
+
 def test_login_verification_and_account_limit_still_require_human():
-    policy = RecoveryPolicy("auto_safe")
+    policy = RecoveryPolicy("autonomous", spend_budget=1)
     for code in ("LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "ACCOUNT_LIMIT"):
         context = _pre_submit_context(error_code=code)
         assert policy.manual_reason(context)
@@ -1348,129 +1474,51 @@ def test_login_verification_and_account_limit_still_require_human():
 
 
 def test_regenerate_blocked_when_video_already_archived():
-    policy = RecoveryPolicy("auto_safe")
+    policy = RecoveryPolicy("autonomous", spend_budget=1)
     context = _pre_submit_context(has_archived_video=True)
     assert not policy.decide("regenerate", context).allowed
+    assert not policy.decide("download_video", context).allowed
+
+
+def test_page_actions_require_the_persisted_task_binding():
+    policy = RecoveryPolicy("autonomous", spend_budget=1)
+    context = _pre_submit_context(page_url="")
+    assert not policy.decide("switch_page", context).allowed
+    assert not policy.decide("locate_task_page", context).allowed
+    assert policy.decide("switch_page", context).reason
 
 
 def test_tool_definitions_expose_all_actions():
-    from agent_recovery.tools import TOOL_DEFINITIONS
-
     names = {item["name"] for item in TOOL_DEFINITIONS}
     assert names == {
         "restart_browser",
+        "switch_page",
         "refresh_page",
+        "inspect_dom",
+        "dismiss_popup",
+        "locate_task_page",
+        "verify_task_status",
+        "check_assets",
         "recall_existing_result",
+        "download_video",
         "retry_h3_push",
         "restart_auto",
         "regenerate",
+        "release_account",
     }
 
 
-def test_diagnose_only_mode_never_executes_actions():
-    context = _pre_submit_context()
-    responses = [{"content": [_text_block('{"summary":"look","needs_human":true}')]}]
-    agent, recorder, client = _agent_for(context, responses, mode="diagnose_only")
-
-    asyncio.run(agent.diagnose(context, mode="diagnose_only"))
-
-    assert all(not calls for calls in recorder.calls.values())
-    assert client.calls[0]["tools"] is None
-
-
-# ---- 诊断为空（thinking 吃掉 token 预算）的回归 ----
-
-def test_max_tokens_default_and_floor_leave_room_for_thinking():
-    """推理模型先输出 thinking，预算太小会让正文为空，诊断变成“未解析”。"""
-    from agent_recovery.client import (
-        DEFAULT_MAX_TOKENS,
-        MIN_MAX_TOKENS,
-        AgentConfig,
+def test_tool_arguments_cannot_carry_credentials():
+    recorder = RecordingBackend()
+    executor = RecoveryToolExecutor(
+        recorder.as_backend(), RecoveryPolicy("autonomous", spend_budget=1)
     )
-
-    assert DEFAULT_MAX_TOKENS >= 4096
-    assert MIN_MAX_TOKENS >= 2048
-    # 配置里写了很小值也要被抬到下限。
-    config = AgentConfig(
-        enabled=True, mode="auto_safe", api_key="k", model="m",
-        max_tokens=max(MIN_MAX_TOKENS, 1),
+    result = asyncio.run(
+        executor.execute(
+            "switch_page",
+            _pre_submit_context(),
+            {"url": "https://www.doubao.com/chat/example", "token": "secret"},
+        )
     )
-    assert config.max_tokens >= MIN_MAX_TOKENS
-
-
-def test_budget_exhausted_detection():
-    from agent_recovery.client import ClaudeClient
-
-    thinking_only = {"stop_reason": "max_tokens",
-                     "content": [{"type": "thinking", "thinking": "..."}]}
-    assert ClaudeClient._budget_exhausted(thinking_only) is True
-
-    with_text = {"stop_reason": "max_tokens",
-                 "content": [{"type": "thinking", "thinking": "..."},
-                             {"type": "text", "text": '{"summary":"x"}'}]}
-    assert ClaudeClient._budget_exhausted(with_text) is False
-
-    normal = {"stop_reason": "end_turn",
-              "content": [{"type": "text", "text": "{}"}]}
-    assert ClaudeClient._budget_exhausted(normal) is False
-
-
-def test_client_retries_with_larger_budget_when_thinking_exhausts_tokens():
-    """第一次预算被思考耗尽时，客户端自动加倍预算重试并拿到正文。"""
-    import asyncio as _asyncio
-
-    from agent_recovery.client import AgentConfig, ClaudeClient
-
-    config = AgentConfig(enabled=True, mode="auto_safe", api_key="k",
-                         model="m", max_tokens=2048)
-    client = ClaudeClient(config)
-    seen: list[int] = []
-
-    async def fake_post(headers, timeout, payload):
-        seen.append(payload["max_tokens"])
-        if len(seen) == 1:
-            return {"stop_reason": "max_tokens",
-                    "content": [{"type": "thinking", "thinking": "long..."}]}
-        return {"stop_reason": "end_turn",
-                "content": [{"type": "text", "text": '{"summary":"ok"}'}]}
-
-    client._post = fake_post
-    body = _asyncio.run(client.create_message(system="s", messages=[]))
-
-    assert seen == [2048, 4096], seen
-    assert ClaudeClient._content_text(body) == '{"summary":"ok"}'
-
-
-def test_thinking_only_response_no_longer_becomes_unparsable():
-    """即使模型只回 thinking，最终应由重试拿到可解析诊断。"""
-    import asyncio as _asyncio
-
-    from agent_recovery.agent import RecoveryAgent
-    from agent_recovery.client import AgentConfig, ClaudeClient
-    from agent_recovery.policy import RecoveryPolicy
-    from agent_recovery.tools import RecoveryToolExecutor
-    from doubao_manager.web import api as api_impl  # noqa: F401
-
-    config = AgentConfig(enabled=True, mode="auto_safe", api_key="k",
-                         model="m", max_tokens=2048)
-    client = ClaudeClient(config)
-    calls = {"n": 0}
-
-    async def fake_post(headers, timeout, payload):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return {"stop_reason": "max_tokens",
-                    "content": [{"type": "thinking", "thinking": "..."}]}
-        return {"stop_reason": "end_turn",
-                "content": [{"type": "text",
-                             "text": '{"summary":"页面异常","root_cause":"网络","confidence":0.8,"recovery_suggestion":"刷新","needs_human":false}'}]}
-
-    client._post = fake_post
-    policy = RecoveryPolicy("auto_safe")
-    agent = RecoveryAgent(client, RecoveryToolExecutor(RecordingBackend().as_backend(), policy), policy)
-    context = _pre_submit_context()
-
-    result = _asyncio.run(agent.diagnose(context, mode="auto_safe"))
-
-    assert result["diagnosis"]["summary"] == "页面异常"
-    assert result["diagnosis"]["summary"] != "Claude 未返回可解析诊断"
+    assert result["executed"] is False
+    assert recorder.calls["switch_page"] == []

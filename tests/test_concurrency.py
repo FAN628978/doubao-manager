@@ -5,10 +5,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi import FastAPI
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import web_api
+
+
+@pytest.fixture(autouse=True)
+def _disable_claude_recovery(monkeypatch):
+    monkeypatch.setenv("DOUBAO_AGENT_ENABLED", "0")
 
 
 def test_second_account_starts_in_parallel_without_global_browser_lane(tmp_path, monkeypatch):

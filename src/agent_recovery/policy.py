@@ -5,27 +5,49 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-# 代理可用的全部恢复工具。收编顺序即“代理可以做的全部事情”。
 SAFE_ACTIONS = {
     "restart_browser",
+    "switch_page",
     "refresh_page",
+    "inspect_dom",
+    "dismiss_popup",
+    "locate_task_page",
+    "verify_task_status",
+    "check_assets",
     "recall_existing_result",
+    "download_video",
     "retry_h3_push",
     "restart_auto",
     "regenerate",
+    "release_account",
 }
 
-# 不可自动跨越的红线：即使放开权限，这些情况也只能由人处理。
-# 其余异常代理都可以自行尝试多个恢复动作。
+OBSERVATION_ACTIONS = {
+    "inspect_dom",
+    "verify_task_status",
+    "check_assets",
+}
+
+NON_TERMINAL_ACTIONS = {
+    "restart_browser",
+    "switch_page",
+    "refresh_page",
+    "inspect_dom",
+    "dismiss_popup",
+    "locate_task_page",
+    "verify_task_status",
+    "check_assets",
+    "release_account",
+}
+
+TERMINAL_ACTIONS = SAFE_ACTIONS - NON_TERMINAL_ACTIONS
+
 HARD_BLOCK_CODES = {
-    # 登录 / 验证码必须由人完成，自动化无法也不应代劳。
     "LOGIN_REQUIRED",
     "VERIFICATION_REQUIRED",
-    # 账号额度不足：可以重试原账号，但不能换号绕过限制。
     "ACCOUNT_LIMIT",
 }
 
-# 当额度可能已经被消耗（不确定是否出片/扣费）时，禁止再花钱重新生成。
 SPEND_SENSITIVE_CODES = {
     "SUBMISSION_UNCONFIRMED",
     "CONFIRM_REQUIRED",
@@ -37,17 +59,19 @@ SPEND_SENSITIVE_CODES = {
     "RESULT_BINDING_MISSING",
 }
 
-# 会花掉额度、产生新视频的动作。
+CONFIRMED_UNSUBMITTED_CODES = {
+    "CONFIRM_NOT_SENT",
+}
+
 SPEND_ACTIONS = {"restart_auto", "regenerate"}
 
-# 预提交阶段：此时重新执行不会产生重复成片。
+# "submitting" is deliberately absent: a click may already have reached Doubao.
 PRE_SUBMIT_STAGES = {
     "",
     "queued",
     "opening",
     "configuring",
     "uploading",
-    "submitting",
 }
 
 _SPEND_UNCERTAIN_RE = re.compile(
@@ -72,30 +96,42 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-class RecoveryPolicy:
-    """放开式的自动恢复策略。
+def _env_nonnegative_int(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
 
-    设计取舍：
-    - 默认允许代理对一个异常连续尝试多个恢复动作，并允许它自行重新生成；
-    - 但三条硬边界永远保留：登录/验证码必须人工、额度不足不得换号绕过、
-      额度可能已被消耗时不得再自动花钱重发；
-    - 另有“硬性诊断期”保护：某些明显不可自动恢复的错误码直接不给代理执行工具。
+
+class RecoveryPolicy:
+    """Policy boundary for autonomous recovery.
+
+    Claude chooses the recovery path. The code only enforces irreversible safety
+    boundaries: human login/CAPTCHA, account ownership, result preservation, and
+    a bounded number of potentially quota-spending attempts.
     """
 
-    def __init__(self, mode: str):
+    def __init__(self, mode: str, spend_budget: int | None = None):
         self.mode = mode
+        self.spend_budget = (
+            max(0, int(spend_budget))
+            if spend_budget is not None
+            else _env_nonnegative_int("DOUBAO_AGENT_SPEND_BUDGET", 1)
+        )
 
-    # ---- 代理是否被允许动手 ----
     def can_act(self, context: Mapping[str, Any]) -> bool:
         if self.mode == "diagnose_only":
             return False
         return not self.manual_reason(context)
 
     def max_actions(self) -> int:
-        """一次异常最多可连续执行的恢复动作数。"""
-        return _env_int("DOUBAO_AGENT_MAX_ACTIONS", 4)
+        default = 12 if self.mode == "autonomous" else 4
+        return _env_int("DOUBAO_AGENT_MAX_ACTIONS", default)
 
-    # ---- 不可自动处理的硬原因 ----
+    def max_attempts_per_action(self) -> int:
+        default = 3 if self.mode == "autonomous" else 1
+        return _env_int("DOUBAO_AGENT_MAX_ACTION_ATTEMPTS", default)
+
     def manual_reason(self, context: Mapping[str, Any]) -> str:
         code = str(context.get("error_code") or "")
         message = str(context.get("error_message") or "")
@@ -104,7 +140,13 @@ class RecoveryPolicy:
             if code == "ACCOUNT_LIMIT":
                 return "账号额度不足必须由人工处理，禁止换号或绕过限制"
             return f"{code} 必须由人工完成，禁止自动恢复"
-        if dom.get("login_required") or re.search(r"登录后才能|请先登录|扫码登录", message):
+        if context.get("account_owned_by_job") is False:
+            owner = str(context.get("account_owner_job_id") or "")
+            suffix = f"（当前占用任务 {owner}）" if owner else ""
+            return f"账号当前由其他任务占用{suffix}，为避免两个任务抢占已停止自动操作"
+        if dom.get("login_required") or re.search(
+            r"登录后才能|请先登录|扫码登录", message
+        ):
             return "登录失效必须由人工完成登录"
         if dom.get("verification_required") or re.search(
             r"人机验证|安全验证|验证码|captcha", message, re.I
@@ -118,7 +160,6 @@ class RecoveryPolicy:
             return "异常信息疑似包含敏感凭据，请人工核查"
         return ""
 
-    # ---- 单个动作是否允许 ----
     def decide(self, action: str, context: Mapping[str, Any]) -> PolicyDecision:
         if action not in SAFE_ACTIONS:
             return PolicyDecision(False, f"未知或未授权的恢复工具：{action}")
@@ -128,15 +169,16 @@ class RecoveryPolicy:
         if manual:
             return PolicyDecision(False, manual)
 
-        # 花钱类动作的安全门：避免为一次已经花过钱的生成再埋单。
         if action in SPEND_ACTIONS:
             blocked = self.spend_block_reason(context)
             if blocked:
                 return PolicyDecision(False, blocked)
 
-        if action == "recall_existing_result":
+        if action in {"recall_existing_result", "download_video"}:
             if context.get("has_archived_video"):
-                return PolicyDecision(False, "已有归档视频，禁止通过召回覆盖已生成内容")
+                return PolicyDecision(
+                    False, "已有归档视频，禁止通过召回或下载覆盖已生成内容"
+                )
             if not context.get("page_url"):
                 return PolicyDecision(False, "缺少已绑定的原任务会话页，不能召回")
         if action == "retry_h3_push":
@@ -146,23 +188,50 @@ class RecoveryPolicy:
                 return PolicyDecision(False, "缺少 H3 回推目标，禁止执行")
         if action == "regenerate" and context.get("has_archived_video"):
             return PolicyDecision(False, "已有归档视频，禁止重新生成覆盖结果")
-        if action in {"restart_browser", "refresh_page"}:
+        if action in {
+            "restart_browser",
+            "switch_page",
+            "refresh_page",
+            "inspect_dom",
+            "dismiss_popup",
+            "locate_task_page",
+            "release_account",
+        }:
             if not context.get("account_id"):
                 return PolicyDecision(False, "任务所属账号已删除，无法操作浏览器")
+        if action in {"switch_page", "locate_task_page"} and not context.get(
+            "page_url"
+        ):
+            return PolicyDecision(False, "任务未持久化具体会话页，禁止猜测其他标签页")
         return PolicyDecision(True, "动作符合恢复策略")
 
-    # ---- 花钱类动作是否安全 ----
     def spend_block_reason(self, context: Mapping[str, Any]) -> str:
         code = str(context.get("error_code") or "")
         stage = str(context.get("last_operational_stage") or "")
-        quota_state = str(context.get("quota_state") or "")
+        quota_state = str(context.get("quota_state") or "").lower()
         message = str(context.get("error_message") or "")
-        if quota_state == "unknown":
-            return "无法判断是否已经扣费，禁止自动重新生成"
-        if code in SPEND_SENSITIVE_CODES:
-            return f"错误码 {code} 可能已消耗额度，禁止自动重新生成"
+        submission_state = str(
+            context.get("submission_state") or ""
+        ).strip().lower()
+        if quota_state in {"unknown", "spent", "consumed"}:
+            return "无法证明额度尚未消耗，禁止自动重新生成"
+        confirmed_unsubmitted = self.mode == "autonomous" and (
+            code in CONFIRMED_UNSUBMITTED_CODES
+            or submission_state
+            in {"not_submitted", "unsubmitted", "confirmed_not_submitted"}
+        )
         if _SPEND_UNCERTAIN_RE.search(message):
             return "提交或确认状态不确定，禁止自动重新生成"
-        if stage and stage not in PRE_SUBMIT_STAGES:
+        if code in SPEND_SENSITIVE_CODES and not confirmed_unsubmitted:
+            return f"错误码 {code} 可能已消耗额度，禁止自动重新生成"
+
+        stage_is_pre_submit = bool(stage) and stage in PRE_SUBMIT_STAGES
+        if not confirmed_unsubmitted and not stage_is_pre_submit:
+            return "无法证明任务尚未提交且未消耗额度，禁止自动重新生成"
+        if (
+            not confirmed_unsubmitted
+            and stage
+            and stage not in PRE_SUBMIT_STAGES
+        ):
             return f"任务已进入 {stage} 阶段，可能已消耗额度，禁止自动重新生成"
         return ""
