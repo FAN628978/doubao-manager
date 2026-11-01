@@ -10,8 +10,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
-import subprocess
 import sys
 import time
 import uuid
@@ -84,16 +82,8 @@ def check_media(blob):
 
 
 def media_probe(path:Path):
-    if not shutil.which('ffprobe'):
-        return {'ffprobe': 'not_installed', 'note': '仅执行容器头检查'}
-    result = subprocess.run(['ffprobe','-v','error','-select_streams','v:0','-show_entries',
-                             'stream=codec_type,width,height,duration','-of','json',str(path)],
-                            text=True,capture_output=True,timeout=30)
-    if result.returncode: raise ValueError('ffprobe 视频流校验失败: ' + result.stderr[:300])
-    info = json.loads(result.stdout)
-    if not any(stream.get('codec_type') == 'video' for stream in info.get('streams', [])):
-        raise ValueError('没有检测到视频流')
-    return {'ffprobe':'pass', 'streams':info.get('streams', [])}
+    extension = check_media(path.read_bytes())
+    return {'container':'pass', 'format':extension, 'note':'仅执行容器头检查'}
 
 
 def save_report(report):

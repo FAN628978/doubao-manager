@@ -2,12 +2,6 @@
 chcp 65001 >nul
 set PYTHONUTF8=1
 cd /d "%~dp0"
-where ffmpeg >nul 2>nul
-if errorlevel 1 (
- echo [ERROR] 自动化离线测试需要 ffmpeg/ffprobe，请先安装并加入 PATH。
- pause
- exit /b 1
-)
 python -m pip install -r requirements-test.txt
 if errorlevel 1 goto :fail
 python -m playwright install chrome

@@ -17,15 +17,19 @@
 | 模型选择 | 下拉菜单按模型名精确匹配选中 | — | **Seedance 2.0 Fast 选择已实测** |
 | 防重复与安全恢复 | 数据库幂等键、原子认领、同账号单任务槽、重启转人工 | 本地 API/断点测试通过 | 待验收 |
 
-**关键限制：** 当前页面控件已按 2026-10-28 的豆包 DOM 适配；页面改版后仍可能需要调整 `doubao_manager/web/automation.py` 的选项、上传、输入框和提交按钮选择器。文生视频、首帧/首尾帧、多张参考图的出片仍待实机验收。
+**关键限制：** 当前页面控件已按 2026-10-28 的豆包 DOM 适配；页面改版后仍可能需要调整 `src/doubao_manager/web/automation.py` 的选项、上传、输入框和提交按钮选择器。文生视频、首帧/首尾帧、多张参考图的出片仍待实机验收。
 
-**账号每日视频额度：** 每个账号每天 30 秒（按本地自然日归零，可用环境变量 `DOUBAO_DAILY_VIDEO_SECONDS` 覆盖）。任务创建时按 `duration` 占用额度，出片归档后记为已消耗；`needs_review`/`failed` 释放占用。提交任务时 `account_id` 留空则自动选择当日剩余额度足够的账号（优先空闲账号），额度不足会返回 409 而非硬凑。额度信息在「账号管理」列表、`GET /api/accounts/{id}/quota`、任务详情 `quota` 字段中可见。
+**账号每日视频额度：** 每个账号每天 30 秒（按本地自然日归零，可用环境变量 `DOUBAO_DAILY_VIDEO_SECONDS` 覆盖）。任务创建时按 `duration` 占用额度，出片归档后记为已消耗；明确未提交或失败的占用会释放，可能已提交但无法确认的任务继续标记为未知占用。原任务重发或补发确认语属于新的生成尝试，会保留上一次可能已消耗的额度并重新占用本次额度。提交任务时 `account_id` 留空则自动选择当日剩余额度足够的账号（优先空闲账号），额度不足会返回 409 而非硬凑。额度信息在「账号管理」列表、`GET /api/accounts/{id}/quota`、任务详情 `quota` 字段中可见。
 
 **账号会员与优先级：** 账号管理中可标记会员账号并设置 `0～1000` 的优先级。自动选号优先避开重试原账号，再选择扣除本次任务时长后剩余额度最少的可用账号，以减少额度碎片；额度适配相同时优先空闲账号，再按优先级和档案顺序选择。会员账号创建或启动视频任务时固定使用 `Seedance 2.0`，调用方传入的 `model` 参数会被忽略。
 
 **暂停账号：** 账号管理中的“暂停使用”会让该账号退出新任务的自动选择，并拒绝用它新建、启动或人工发送生成任务；已经运行的任务不会被中断。暂停期间仍可打开浏览器维护登录状态或查看历史结果，点击“恢复使用”即可重新启用。
 
-**执行与队列：** 自动任务始终逐个执行，一个任务进入等待视频后，下一个任务立即开始准备和提交。`正在处理队列上限` 独立限制“正在处理”中最多容纳多少任务，默认 3；可将环境变量 `DOUBAO_MAX_CONCURRENT_ACCOUNTS` 设置为其他正整数，设为 `0` 表示不限制。任务完成或判定失败后才释放队列名额。
+**执行与队列：** 自动任务始终逐个执行，一个任务进入等待视频后，下一个任务立即开始准备和提交。`正在处理队列上限` 只限制机器正在执行的任务（打开页面到下载完成），默认 3；可将环境变量 `DOUBAO_MAX_CONCURRENT_ACCOUNTS` 设置为其他正整数，设为 `0` 表示不限制。任务进入“待人工”（人工发送 / 需人工复查）或结束（已下载 / 失败）时释放队列名额；账号页面和额度占用仍按各自规则保留。
+
+**账号分配：** “待处理”里的任务不分配账号、也不预占额度。只有任务真正拿到“正在处理”名额、进入处理前一刻，才会挑选账号并预占额度；调用方显式传 `account_id` 时沿用该账号。操作者也可以在进入处理前用 `POST /api/jobs/{id}/account` 手动指定或清空账号（清空后由系统在分配时决定）。复制 / 重试生成的任务会优先避开原任务用过的账号。
+
+**处理完 → 已归档：** 视频下载校验成功后任务进入“处理完”，不会自动归档。“已归档”是一个独立队列，由操作者在任务页点“✔ 归档”（或批量“归档所选”）把“处理完”的任务移入，也可点“取消归档”退回处理完；归档只记录时间，不动任何文件。只有已归档的任务才会出现在“已归档”队列与概览的“已归档视频”统计里。
 
 **执行流程：** 轮询间隔按约 1 / 2 / 4 / 8 秒自适应；账号无等待任务且无人工准备页面时，浏览器空闲 30 秒后关闭。自动步骤默认不加随机延迟，可通过 `DOUBAO_STEP_DELAY_SECONDS`（或 `DOUBAO_STEP_DELAY_MIN_SECONDS` / `DOUBAO_STEP_DELAY_MAX_SECONDS`）开启。执行心跳默认每 15 秒写入一次，可用 `DOUBAO_HEARTBEAT_SECONDS` 调整。
 
@@ -36,9 +40,9 @@
 1. 解压 ZIP 到固定位置，例如 `D:\DoubaoAccountDeskV3`，**不要覆盖 V2 文件夹**。
 2. 双击 `setup.bat`，安装 Python 依赖及 Playwright Chrome。
 3. 双击 `start.bat`，浏览器访问 `http://127.0.0.1:8765`。
-4. 进入“账号管理”创建账号档案（名称留空则自动按 `doubao01`、`doubao02`… 命名），点击“打开豆包”，在独立 Chrome 窗口中**自行完成登录**。误建的档案可用“删除”移除，登录资料会先移动到 `data/trash/`。
+4. 进入“账号管理”创建账号档案（名称留空则自动按 `doubao01`、`doubao02`… 命名），点击“打开豆包”，在独立 Chrome 窗口中**自行完成登录**。Windows 任务栏图标会显示账号序号，每个账号窗口保持为独立按钮。误建的档案可用“删除”移除，登录资料会先移动到 `data/trash/`。
 5. 进入“分镜任务” → “多模式网页生成”，配置模式、比例、时长，按需上传图片并创建任务。
-6. 状态可能为 `opening → configuring → uploading → submitting → generating → confirming（豆包要求确认时）→ downloading → downloaded`。人工发送任务会先停在 `queued`，本机点击“发送到豆包”后进入 `awaiting_manual_send`，由你在豆包网页亲自发送，出片后点“关联下载”归档。若页面无法确认，会进入 `needs_review`；点击“日志”可查看原因。人工确认了对应视频时可以使用“复查归档”，其结果会标记为 `human_verified_upload`，**不算自动出片验证**。
+6. 状态可能为 `opening → configuring → uploading → submitting → generating → confirming（豆包要求确认时）→ downloading → downloaded`。默认“手动”设置下新建任务会先停在 `queued`：点“▶ 进入调度”后全程自动执行；想亲自发送就点“准备页面（人工发送）”，进入 `awaiting_manual_send` 后由你在豆包网页点击发送，出片后点“关联下载”归档。若页面无法确认，会进入 `needs_review`；点击“日志”可查看原因。人工确认了对应视频时可以使用“复查归档”，其结果会标记为 `human_verified_upload`，**不算自动出片验证**。
 
 > 仅使用自己有权操作的账号及允许的网页功能。脚本不会提取/共享 Cookie，不会绕过验证码、登录挑战、访问限制或生成额度限制，也不会自动切换账号。
 
@@ -55,7 +59,7 @@
 
 ## 本地自动化测试
 
-安装 **FFmpeg（包含 ffprobe）** 并加入 `PATH` 后，双击 **`selftest.bat`**。该脚本使用真实 Chrome/Chromium 与本地构造的模拟页面，验证点击选项、素材上传、提交、识别视频、下载字节、异常处理、幂等和重启保护。
+???? **`selftest.bat`**???????? Chrome/Chromium ?????????????????????????????????????????????????
 
 开发者也可以执行：
 
@@ -92,7 +96,7 @@ test-live.bat --account-id acc_xxxxxx --mode reference_images --reference "D:\im
 test-live.bat --job-id job_xxxxxxxxxxxx
 ```
 
-测试报告及验证下载文件保存在 `data/acceptance_reports/`，包含任务 ID、各阶段状态、实际媒体大小、SHA256、可选 ffprobe 视频流信息，以及 `live_website_verified` 布尔值。只有 `result_source=web_automated` 且下载完成，脚本才会报告 `LIVE_AUTO_PASS`。人工导入时显示 `MANUAL_FILE_VERIFIED`，不声称自动出片成功。测试失败时保留错误状态与报告；不得盲目重复提交。
+?????????????? `data/acceptance_reports/`????? ID??????????????SHA256???????? `live_website_verified` ?????? `result_source=web_automated` ???????????? `LIVE_AUTO_PASS`???????? `MANUAL_FILE_VERIFIED`???????????????????????????????????
 
 ## 单入口对外接口（推荐，供外部系统集成，拉取式）
 
@@ -168,16 +172,29 @@ curl -o out.mp4 http://127.0.0.1:8765/api/v1/videos/job_xxx/video
 
 ## 本地任务模式与人工发送
 
-任务模式由本地管理台顶部的“任务模式设置”统一选择：默认“自动执行”，也可切换为“人工处理”。远端 `lzg` 上的 H3 只提供任务和回推信息，不传 `submit_mode` 或 `auto_start`；本地服务按当前设置决定执行方式。
+任务模式由本地管理台顶部的“任务模式设置”统一选择，决定**新任务默认怎么进入调度**：
 
-人工模式的流程如下：
+| 设置 | 建单后的行为 |
+| --- | --- |
+| **自动** | 接收后**直接进入调度**，按“正在处理队列上限”自动配置、提交、确认、下载并回推服务器；异常时转人工。 |
+| **手动**（默认） | 接收后只进入 **“待处理”队列**，不占用调度名额、不分配账号；在任务列表点 **“▶ 进入调度”** 后才交给调度器，之后**全程自动执行**。 |
 
-1. **H3 建单**：`POST /api/v1/videos`（或 `/api/v1/videos/generations`）只提交任务内容。任务按本地“人工处理”设置进入 `queued`，不会自动执行。
-2. **本机点击“发送到豆包”**：管理台调用 `POST /api/v1/videos/generations/{id}/start`。脚本会打开豆包、选择模式/比例/时长/模型、上传参考图，并把提示词填进输入框；**不点击发送**。任务状态变为 `awaiting_manual_send`，页面保持打开并置于前台。
-3. **你在豆包网页亲自发送**：需要确认参数时也由你在网页处理（或用管理台“发送确认语”按钮）。
-4. **出片后点“下载视频”**：管理台调用 `POST /api/v1/videos/generations/{id}/recall?force_redownload=true` 复用准备时的标签页，按提交前记录的卡片序号重新下载并校验视频，状态变为 `downloaded`，`result_source=manual_web_link`。
-5. **点“推送服务器”**：H3 提交任务时会附带单任务回推地址和随机令牌；管理台调用 `POST /api/v1/videos/generations/{id}/push-result`，主动把已归档 MP4 回传 H3。H3 只提交、不轮询本地管理台。
-6. **需要再次执行时**：任务行“复制为新任务”（`POST /api/v1/videos/generations/{id}/copy?confirm_copy=true`）按服务器最初提交的参数创建新任务，继承提交方式和服务器回推信息，但不复制网页会话、运行状态或视频结果；系统会重新选择额度足够的空闲账号（优先避开原账号）。复制出的任务保持 `queued`，不会自动执行，由操作者在任务列表中手动启动。原任务保持不变。
+远端 `lzg` 上的 H3 只提供任务和回推信息，不传 `submit_mode` 或 `auto_start`；本地服务按当前设置决定执行方式。手动模式下即使调用方传了 `auto_start=true` 也只建单排队。
+
+两者的差别只在**什么时候交给调度器**：一旦点击“进入调度”（`/dispatch`），任务的处理方式随之转为 auto，交给调度器后全程自动执行（含自动点击发送）。想让机器只准备页面、由你在网页亲自点发送，请走下方“人工发送”半自动流程。
+
+手动模式（延迟自动执行）的完整流程：
+
+1. **H3 建单**：`POST /api/v1/videos`（或 `/api/v1/videos/generations`）只提交任务内容。任务按本地“手动”设置进入 `queued`（待处理），不会自动执行。
+2. **本机点击“▶ 进入调度”**：管理台调用 `POST /api/v1/videos/generations/{id}/dispatch`，任务转为自动执行并交给调度器；脚本自动打开豆包、选择模式/比例/时长/模型、上传参考图、填入提示词并**自动点击发送**，之后自动确认、下载归档，并按 `result_push_url` 自动回推服务器。
+
+想保留“机器准备页面、人亲自点发送”的半自动流程（人工发送）：
+
+1. **准备页面**：点任务行“准备页面（人工发送）”（`POST /api/v1/videos/generations/{id}/prepare-manual`，或 `/start`），脚本准备页面但**不点击发送**，任务状态变为 `awaiting_manual_send`，页面保持打开并置于前台。
+2. **你在豆包网页亲自发送**：需要确认参数时也由你在网页处理（或用管理台“发送确认语”按钮）。
+3. **出片后点“下载视频”**：管理台调用 `POST /api/v1/videos/generations/{id}/recall?force_redownload=true` 复用准备时的标签页，按提交前记录的卡片序号重新下载并校验视频，状态变为 `downloaded`，`result_source=manual_web_link`。
+4. **点“推送服务器”**：H3 提交任务时会附带单任务回推地址和随机令牌；管理台调用 `POST /api/v1/videos/generations/{id}/push-result`，主动把已归档 MP4 回传 H3。H3 只提交、不轮询本地管理台。
+5. **需要再次执行时**：任务行“复制为新任务”（`POST /api/v1/videos/generations/{id}/copy?confirm_copy=true`）按服务器最初提交的参数创建新任务，继承提交方式和服务器回推信息，但不复制网页会话、运行状态或视频结果；系统会重新选择额度足够的空闲账号（优先避开原账号）。复制出的任务保持 `queued`，不会自动执行，由操作者在任务列表中手动启动。原任务保持不变。
 
 约束与兜底：
 
@@ -185,9 +202,8 @@ curl -o out.mp4 http://127.0.0.1:8765/api/v1/videos/job_xxx/video
 - 同一天内的重新发送沿用它已有的额度占用，不会重复占用；跨天或额度已释放时才重新占用当天额度。
 - H3 侧对 manual 任务的 `needs_review` / 普通 `failed` 保持 `processing`（最长 7 天），等待本机操作者重新发送或关联下载；只有操作者明确“判定失败”（`MANUAL_CONFIRMED_FAILED`）时才显示失败并停止等待。自动任务仍按失败处理。
 - 如果豆包还停在“确认生成”，点“关联下载”会得到 `CONFIRM_REQUIRED`；先在网页确认，再点一次。
-- 如果任务因异常没有保存网页会话，可在任务工具中选择“绑定 / 更换下载网页”，粘贴该分镜的 `https://www.doubao.com/chat/<会话ID>` 具体会话地址，再点“关联下载”。绑定操作不会重新提交生成；通用对话页、临时会话和非豆包地址会被拒绝。
 - 页面丢失或无法关联时，用“复查归档”手工导入 MP4；下载成功后额度会结算为已消耗。
-- 想恢复全自动，在本地管理台把“任务模式设置”切换为“自动执行”；后续 H3 任务接收后会立即执行，成功归档后自动回推服务器。
+- 想恢复全自动，在本地管理台把“任务模式设置”切换为“自动”；后续 H3 任务接收后会立即进入调度并自动执行，成功归档后自动回推服务器。
 
 ### SSH 隧道（H3 → 本机 8765）
 
@@ -220,6 +236,7 @@ Host lzg
 | POST | `/api/v1/videos/assets` | multipart 上传 PNG/JPEG/WEBP（≤15MB） |
 | POST | `/api/v1/videos/generations` | 创建网页生成任务 |
 | POST | `/api/v1/videos/generations/{id}/start` | 仅启动 `queued` 任务，重复执行返回 409 |
+| POST | `/api/v1/videos/generations/{id}/restart-auto` | 保留原任务并重新匹配可用账号；先结算原账号额度占用，再自动执行 |
 | POST | `/api/v1/videos/generations/{id}/retry?confirm_retry=true` | 复制 `needs_review` / `failed` 未完成任务的提示词、模式和素材，优先更换为空闲且额度足够的账号后重新排队 |
 | POST | `/api/v1/videos/generations/{id}/copy?confirm_copy=true` | 按服务器初始提交参数复制为新的 `queued` 任务，重新选择账号并继承原服务器回推信息 |
 | GET | `/api/v1/videos/generations/{id}` | 查询任务状态、生成参数、归档信息 |
@@ -263,7 +280,7 @@ Host lzg
 - 成功点击“生成”但无法确认提交时，任务转 `needs_review`。这时需要人工核对官网历史记录，避免双重计费。
 - 重新启动服务时，若已有有效归档视频则恢复为 `downloaded`；其余未完成任务保守转 `needs_review`，不重发。H3 推送失败只记录 `delivery_state=failed` 和下次建议重试时间，不会把已归档视频改回 `needs_review`。
 - 页面如果要求登录、验证码、额度、会员、风控确认，会停止执行并等待用户处理。
-- 下载源必须是允许的 HTTPS 视频 CDN 域名；未知域名/重定向拒绝自动访问；仅接受 MP4/WEBM，并在系统有 ffprobe 时校验包含视频流。
+- ????????? HTTPS ?? CDN ???????/????????????? MP4/WEBM?????????????
 - `data/` 有浏览器登录态、素材、私人媒体与数据库。绝不可提交到 Git、发给他人或公开共享。
 - 新建账号档案时若名称留空，按 `doubao01`、`doubao02`… 顺序命名：取已有 `doubao+数字` 档案（含已归档）的最大编号 +1，编号不足两位补零，重号自动跳过；前端“添加账号档案”会预填这个名字，可改。
 - “归档”只把账号移出列表，不动任何文件；“删除账号档案”会解除任务的账号关联（任务与已归档视频保留），并把该账号的登录资料与浏览器下载目录移动到 `data/trash/<时间>_<账号ID>/`，确认无误后可手动清空；`?purge_data=true` 直接删除不进回收目录。浏览器窗口未关闭或有任务在跑时会拒绝删除。
@@ -273,18 +290,22 @@ Host lzg
 ## 文件结构
 
 ```text
-app.py                       # FastAPI 管理服务、账号、分镜、手工导入
-web_api.py                   # 兼容门面：保留旧导入、测试 monkeypatch 和调用入口
-doubao_manager/web/config.py # 环境参数、选择器与运行常量
-doubao_manager/web/models.py # API 请求模型与业务异常
-doubao_manager/web/utils.py  # 时间、路径、轮询和步骤延迟工具
-doubao_manager/web/quota.py  # 额度占用、结算与启动恢复
-doubao_manager/web/schema.py # Web 任务表、迁移与投递索引
-doubao_manager/web/automation.py # 豆包页面自动化、下载与校验
-doubao_manager/web/api.py    # FastAPI 路由、任务编排、回推与事件
-static/index.html            # Windows 本地管理台前端（网页应用）
-static/styles.css            # 管理台样式
-static/app.js                # 管理台交互逻辑
+docs/                        # API、测试报告与故障恢复说明
+src/                         # 可运行源码
+src/agent_recovery/          # 受控故障恢复与审计日志
+tests/fixtures/              # 本地测试图片素材
+src/app.py                   # FastAPI 管理服务、账号、分镜、手工导入
+src/web_api.py               # 兼容门面：保留旧导入、测试 monkeypatch 和调用入口
+src/doubao_manager/web/config.py # 环境参数、选择器与运行常量
+src/doubao_manager/web/models.py # API 请求模型与业务异常
+src/doubao_manager/web/utils.py  # 时间、路径、轮询和步骤延迟工具
+src/doubao_manager/web/quota.py  # 额度占用、结算与启动恢复
+src/doubao_manager/web/schema.py # Web 任务表、迁移与投递索引
+src/doubao_manager/web/automation.py # 豆包页面自动化、下载与校验
+src/doubao_manager/web/api.py    # FastAPI 路由、任务编排、回推与事件
+src/static/index.html        # Windows 本地管理台前端（网页应用）
+src/static/styles.css        # 管理台样式
+src/static/app.js            # 管理台交互逻辑
 scripts/live_acceptance.py   # 在 Windows 已登录浏览器上做真实出片验收
 selftest.bat                 # 离线自动化回归测试
 test-live.bat                # 实机验收入口

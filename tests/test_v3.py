@@ -2,9 +2,9 @@
 import asyncio
 import io
 import os
-import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 from playwright.async_api import async_playwright, Page, APIRequestContext
+from media_fixture import sample_mp4_bytes
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app as application
@@ -29,7 +30,7 @@ HTML = r'''<!doctype html><html lang="zh"><head><meta charset="utf-8"/></head><b
 <div data-slot="first" data-asset-status="pending" hidden>首帧</div>
 <div data-slot="last" data-asset-status="pending" hidden>尾帧</div>
 <div data-slot="references" data-asset-status="pending" hidden>参考图</div>
-<textarea id="prompt"></textarea><button type="submit" id="generate">生成</button>
+<div data-testid="chat_input"><textarea id="prompt" data-testid="chat_input_input"></textarea><button type="submit" id="generate">生成</button></div>
 <div id="message"></div><div id="result"></div>
 <script>
 for(const input of document.querySelectorAll('input[type=file]')) {
@@ -68,9 +69,7 @@ def png_bytes():
 def local_site(tmp_path_factory):
     folder=tmp_path_factory.mktemp('local_fixture')
     (folder/'index.html').write_text(HTML,encoding='utf-8')
-    result=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-f','lavfi','-i','color=c=blue:s=320x180:d=1',
-            '-c:v','mpeg4','-pix_fmt','yuv420p','-y',str(folder/'video.mp4')],capture_output=True,text=True)
-    assert result.returncode==0,result.stderr
+    (folder/'video.mp4').write_bytes(sample_mp4_bytes())
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             f=folder/('video.mp4' if self.path.startswith('/video.mp4') else 'index.html')
@@ -368,6 +367,17 @@ def test_member_account_priority_and_forced_model(tmp_path, monkeypatch):
         })
         assert created.status_code == 202, created.text
         body = created.json()
+        # 待处理任务不分配账号；进入处理前才选出优先级的会员账号并强制使用会员模型。
+        assert body['account_id'] is None
+        started = client.post(f"/api/v1/videos/generations/{body['id']}/start")
+        assert started.status_code == 200, started.text
+        # 分配发生在拿到处理名额之后，这里轮询等待。
+        body = started.json()
+        for _ in range(500):
+            body = client.get(f"/api/v1/videos/generations/{created.json()['id']}").json()
+            if body['account_id']:
+                break
+            time.sleep(0.01)
         assert body['account_id'] == member['id']
         assert body['web']['model'] == 'Seedance 2.0'
 
@@ -412,7 +422,17 @@ def test_paused_account_is_not_used_for_new_generations(tmp_path, monkeypatch):
             'prompt': '自动选择可用账号', 'duration': 4, 'auto_start': False,
         })
         assert selected.status_code == 202, selected.text
-        assert selected.json()['account_id'] == active['id']
+        assert selected.json()['account_id'] is None
+        selected_start = client.post(f"/api/v1/videos/generations/{selected.json()['id']}/start")
+        assert selected_start.status_code == 200, selected_start.text
+        # 分配发生在拿到处理名额之后，这里轮询等待。
+        selected_state = selected_start.json()
+        for _ in range(500):
+            selected_state = client.get(f"/api/v1/videos/generations/{selected.json()['id']}").json()
+            if selected_state['account_id']:
+                break
+            time.sleep(0.01)
+        assert selected_state['account_id'] == active['id']
 
         rejected = client.post('/api/v1/videos/generations', json={
             'account_id': paused['id'], 'prompt': '不能使用暂停账号',
@@ -681,3 +701,63 @@ def test_clear_account_caches_preserves_login_and_skips_open_account(tmp_path, m
         assert login_data.read_bytes() == b'login-state'
         assert all(not path.exists() for path in cache_files)
         assert open_cache.read_bytes() == b'keep'
+
+
+def test_safe_cleanup_removes_only_disposable_data(tmp_path, monkeypatch):
+    data = tmp_path / 'data'
+    data.mkdir()
+    monkeypatch.setattr(application, 'BASE_DIR', tmp_path)
+    monkeypatch.setattr(application, 'DB_PATH', data / 'manager.sqlite3')
+    monkeypatch.setattr(application, 'DATA_DIR', data)
+    monkeypatch.setattr(application, 'PROFILES_DIR', data / 'profiles')
+    monkeypatch.setattr(application, 'DOWNLOADS_DIR', data / 'videos')
+    monkeypatch.setattr(application, 'TRASH_DIR', data / 'trash')
+    monkeypatch.setattr(application, 'ACCEPTANCE_REPORTS_DIR', data / 'acceptance_reports')
+    with TestClient(application.app) as client:
+        closed = client.post('/api/accounts', json={'name': '已关闭账号'}).json()
+        opened = client.post('/api/accounts', json={'name': '浏览器打开账号'}).json()
+        closed_profile = tmp_path / closed['profile_dir']
+        opened_profile = tmp_path / opened['profile_dir']
+
+        login_data = closed_profile / 'Default' / 'Login Data'
+        login_data.parent.mkdir(parents=True, exist_ok=True)
+        login_data.write_bytes(b'login')
+        closed_cache = closed_profile / 'Default' / 'Cache' / 'cache.bin'
+        closed_cache.parent.mkdir(parents=True, exist_ok=True)
+        closed_cache.write_bytes(b'cache')
+        open_cache = opened_profile / 'Default' / 'Cache' / 'cache.bin'
+        open_cache.parent.mkdir(parents=True, exist_ok=True)
+        open_cache.write_bytes(b'keep')
+
+        trash_file = data / 'trash' / 'old' / 'profile.bin'
+        trash_file.parent.mkdir(parents=True)
+        trash_file.write_bytes(b'trash-data')
+        report_file = data / 'acceptance_reports' / 'old.json'
+        report_file.parent.mkdir(parents=True)
+        report_file.write_bytes(b'report-data')
+        archived = data / 'videos' / 'library' / 'keep.mp4'
+        archived.parent.mkdir(parents=True)
+        archived.write_bytes(b'archived')
+        asset = data / 'web_assets' / 'keep.png'
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b'asset')
+
+        application.open_contexts[opened['id']] = object()
+        try:
+            response = client.post('/api/cleanup/safe')
+        finally:
+            application.open_contexts.pop(opened['id'], None)
+
+        assert response.status_code == 200, response.text
+        result = response.json()
+        expected_bytes = 5 + 10 + 11
+        assert result['freed_bytes'] == expected_bytes
+        assert result['areas']['browser_cache']['cleaned_accounts'] == 1
+        assert result['areas']['trash']['freed_bytes'] == 10
+        assert result['areas']['acceptance_reports']['freed_bytes'] == 11
+        assert login_data.read_bytes() == b'login'
+        assert open_cache.read_bytes() == b'keep'
+        assert archived.read_bytes() == b'archived'
+        assert asset.read_bytes() == b'asset'
+        assert list((data / 'trash').iterdir()) == []
+        assert list((data / 'acceptance_reports').iterdir()) == []

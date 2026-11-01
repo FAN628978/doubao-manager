@@ -4,7 +4,6 @@ Confirms REST create -> background execution -> downloaded without a live Doubao
 """
 import asyncio
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from playwright.async_api import Page, APIRequestContext, async_playwright
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from test_v3 import HTML, launch_chromium
+from media_fixture import sample_mp4_bytes
 from web_api import mount_video_api
 
 
@@ -24,9 +24,7 @@ def test_api_create_worker_and_archive_real_chromium(tmp_path,monkeypatch):
     monkeypatch.setenv('DOUBAO_RESULT_TIMEOUT','8')
     monkeypatch.setenv('DOUBAO_LOCAL_API_KEY','integration-test-only')
     output = tmp_path/'fixture.mp4'
-    p=subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=c=green:s=320x180:d=1',
-                      '-c:v','mpeg4',str(output)],capture_output=True,text=True)
-    assert p.returncode==0,p.stderr
+    output.write_bytes(sample_mp4_bytes())
     blob=output.read_bytes()
     dbfile=tmp_path/'integration.sqlite'
     def db():
@@ -68,7 +66,7 @@ def test_api_create_worker_and_archive_real_chromium(tmp_path,monkeypatch):
                 # Wrong key must be rejected; wrong result cannot be declared by normal API.
                 payload={'account_id':'account_1','project_id':'测试项目','episode_id':'1','shot_id':'1',
                          'prompt':'城墙推镜','mode':'text2video','ratio':'16:9','duration':4,
-                         'idempotency_key':'unique1','auto_start':True}
+                         'idempotency_key':'unique1','submit_mode':'auto','auto_start':True}
                 assert (await client.post('/api/v1/videos/generations',json=payload)).status_code==401
                 h={'X-API-Key':'integration-test-only'}
                 r=await client.post('/api/v1/videos/generations',json=payload,headers=h)

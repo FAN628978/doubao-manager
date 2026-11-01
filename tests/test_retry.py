@@ -100,6 +100,106 @@ def test_auto_restart_after_verification_reuses_original_job(tmp_path, monkeypat
         assert calls == ["auto", "auto"]
 
 
+def test_auto_restart_rematches_to_fresh_account(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
+    monkeypatch.setattr(application, "DB_PATH", tmp_path / "restart-rematch.sqlite3")
+    application.init_db()
+    web_api.recover_interrupted_jobs(application.db)
+    with application.db() as conn:
+        conn.executemany(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            [
+                ("account_1", "first", "", str(tmp_path / "p1"), "2026-01-01T00:00:00+00:00"),
+                ("account_2", "second", "", str(tmp_path / "p2"), "2026-01-02T00:00:00+00:00"),
+            ],
+        )
+
+    opened_accounts = []
+
+    async def fake_browser(account_id):
+        opened_accounts.append(account_id)
+        return account_id
+
+    async def fake_perform(
+        _ctx, _req, _assets, target, _status, _page_url, _binding,
+        on_manual_ready=None, confirmation_text="", close_on_success=False,
+        on_review_page=None,
+    ):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"restart-rematch-video")
+        return {
+            "output": str(target),
+            "video_url": "https://example.com/restart-rematch.mp4",
+            "web_page_url": "https://www.doubao.com/chat/restart-rematch",
+        }
+
+    monkeypatch.setattr(web_api, "perform", fake_perform)
+    bridge = FastAPI()
+    web_api.mount_video_api(
+        bridge,
+        db=application.db,
+        get_account=application.get_account,
+        get_job=application.get_job,
+        browser=fake_browser,
+        base_dir=tmp_path,
+        downloads_dir=tmp_path / "videos",
+        serialize=application.job_row,
+    )
+
+    with TestClient(bridge) as client:
+        created = client.post(
+            "/api/v1/videos/generations",
+            json={
+                "account_id": "account_1",
+                "prompt": "restart with another account",
+                "duration": 4,
+                "submit_mode": "auto",
+                "auto_start": False,
+            },
+        )
+        assert created.status_code == 202, created.text
+        jobid = created.json()["id"]
+        with application.db() as conn:
+            conn.execute(
+                "UPDATE jobs SET status='needs_review', error_message='page failed' "
+                "WHERE id=?",
+                (jobid,),
+            )
+            conn.execute(
+                "UPDATE video_web_jobs SET error_code='GENERATION_FAILED',"
+                "error_class='GENERATION_FAILED',phase='needs_review',"
+                "quota_state='unknown' WHERE job_id=?",
+                (jobid,),
+            )
+
+        restarted = client.post(
+            f"/api/v1/videos/generations/{jobid}/restart-auto"
+        )
+        assert restarted.status_code == 200, restarted.text
+        state = restarted.json()
+        for _ in range(200):
+            state = client.get(
+                f"/api/v1/videos/generations/{jobid}"
+            ).json()
+            if state["status"] in ("downloaded", "needs_review", "failed"):
+                break
+            time.sleep(0.02)
+
+        assert state["id"] == jobid
+        assert state["status"] == "downloaded", state
+        assert state["account_id"] == "account_2"
+        assert opened_accounts == ["account_2"]
+
+    with application.db() as conn:
+        old_quota = web_api.quota_summary(conn, "account_1")
+        new_quota = web_api.quota_summary(conn, "account_2")
+    assert old_quota["consumed_seconds"] == 4
+    assert old_quota["reserved_seconds"] == 0
+    assert new_quota["consumed_seconds"] == 4
+
+
 def test_retry_clones_unfinished_job_and_selects_another_account(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
     monkeypatch.setattr(application, "DB_PATH", tmp_path / "retry.sqlite3")
@@ -163,7 +263,8 @@ def test_retry_clones_unfinished_job_and_selects_another_account(tmp_path, monke
         assert retried.status_code == 202, retried.text
         body = retried.json()
         assert body["id"] != original_id
-        assert body["account_id"] == "account_2"
+        # 重试任务同样先进入待处理、不绑定账号；分配时会避开原任务的 account_1。
+        assert body["account_id"] is None
         assert body["prompt"] == "保留原提示词"
         assert body["task_name"] == "原任务 · 重试"
         assert body["web"]["retry_of_job_id"] == original_id
@@ -256,7 +357,9 @@ def test_copy_recreates_initial_server_submission_as_queued_job(tmp_path, monkey
         body = copied.json()
         assert body["id"] != original_id
         assert body["status"] == "queued"
-        assert body["account_id"] == "account_2"
+        # 复制出的任务进入待处理，不提前绑定账号；进入处理前才分配。
+        assert body["account_id"] is None
+        assert body["web"]["quota_state"] == ""
         assert body["project_id"] == "项目一"
         assert body["episode_id"] == "第一集"
         assert body["shot_id"] == "镜头一"
@@ -383,7 +486,10 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
     push_url = "http://127.0.0.1:3013/api/v1/doubao-results/99"
     push_token = "auto-push-token-123456"
     with TestClient(bridge) as client:
-        assert client.get("/api/settings/video-submit-mode").json() == {"submit_mode": "auto"}
+        # 本地默认处理方式是手动；本用例验证 auto 路径，显式切回自动。
+        assert client.get("/api/settings/video-submit-mode").json() == {"submit_mode": "manual"}
+        assert client.put("/api/settings/video-submit-mode",
+                          json={"submit_mode": "auto"}).status_code == 200
         default_confirmation = "参数无误，请按照默认预设开始生成。"
         updated_preset = client.put(
             "/api/v1/videos/confirmation-presets/preset_default",
@@ -408,6 +514,12 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
         assert state["status"] == "downloaded", state
         assert state["account_id"] == "account_1"
         assert state["web"]["submit_mode"] == "auto"
+        # 回推已改成不阻塞 worker 的后台任务：下载完成后再等回推落地。
+        for _ in range(200):
+            state = client.get(f"/api/v1/videos/generations/{job_id}").json()
+            if state["web"]["result_pushed_at"]:
+                break
+            time.sleep(0.01)
         assert state["web"]["result_pushed_at"]
         assert confirmation_texts == [default_confirmation]
         assert close_flags == [True]
@@ -433,7 +545,8 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
         copied_id = copied.json()["id"]
         copied_state = copied.json()
         assert copied_state["status"] == "queued", copied_state
-        assert copied_state["account_id"] == "account_2"
+        # 复制任务先进入待处理、不带账号；分配时才会挑一个额度足够的空闲账号。
+        assert copied_state["account_id"] is None
         assert confirmation_texts == [default_confirmation]
         assert close_flags == [True]
         assert closed_accounts == ["account_1"]
@@ -441,13 +554,14 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
 
         started = client.post(f"/api/v1/videos/generations/{copied_id}/restart-auto")
         assert started.status_code == 200, started.text
-        for _ in range(100):
+        for _ in range(600):
             copied_state = client.get(f"/api/v1/videos/generations/{copied_id}").json()
             if copied_state["status"] in ("downloaded", "needs_review", "failed"):
                 break
             time.sleep(0.01)
 
         assert copied_state["status"] == "downloaded", copied_state
+        # 复制任务的账号在进入处理前才分配，且会避开原任务用过的 account_1。
         assert copied_state["account_id"] == "account_2"
         assert copied_state["video_path"]
         assert copied_state["web"]["error_code"] == ""

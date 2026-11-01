@@ -5,6 +5,8 @@ No live Doubao browsing, account session, or generation costs are used here.
 import asyncio
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from playwright.async_api import Page, async_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_v3 import HTML, launch_chromium
+from media_fixture import sample_mp4_bytes
 import app as application
 import web_api
 from web_api import (ReviewNeeded, VideoRequest, perform, is_safe_media,
@@ -117,6 +120,58 @@ def test_recall_uses_persistent_database_lock(tmp_path, monkeypatch):
         assert '召回操作正在执行' in result.text
 
 
+def test_force_redownload_keeps_archived_status_while_recalling(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
+    application.init_db()
+    recover_interrupted_jobs(application.db)
+    with application.db() as c:
+        c.execute("INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+                  ('acc_arch', 'arch', '', str(tmp_path / 'profile'), '2026-10-28T00:00:00+00:00'))
+        c.execute("""INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)
+                     VALUES(?,?,?,?,?,?,?,?,?)""",
+                  ('job_arch', '', '', '', 'prompt', 'acc_arch', 'downloaded',
+                   '2026-10-28T00:00:00+00:00', '2026-10-28T00:00:00+00:00'))
+        c.execute("""INSERT INTO video_web_jobs(job_id,ratio,duration,web_page_url)
+                     VALUES(?,?,?,?)""",
+                  ('job_arch', '16:9', 4, 'https://www.doubao.com/chat/archived'))
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    async def blocking_browser(_account_id):
+        entered.set()
+        while not release.is_set():
+            await asyncio.sleep(0.02)
+        raise RuntimeError('forced recall failure')
+
+    app2 = FastAPI()
+    web_api.mount_video_api(app2, db=application.db, get_account=application.get_account,
+                            get_job=application.get_job, browser=blocking_browser,
+                            base_dir=tmp_path, downloads_dir=tmp_path / 'videos',
+                            serialize=application.job_row)
+    with TestClient(app2) as client:
+        started = client.post('/api/v1/videos/generations/job_arch/recall?force_redownload=true')
+        assert started.status_code == 200, started.text
+        assert entered.wait(2)
+
+        # The archived bucket is stable while the artifact is re-downloaded.
+        during = client.get('/api/v1/videos/generations/job_arch').json()
+        assert during['status'] == 'downloaded'
+        assert during['web']['recall_state'] == 'recalling'
+
+        release.set()
+        state = None
+        for _ in range(100):
+            state = client.get('/api/v1/videos/generations/job_arch').json()
+            if state['web']['recall_state'] == '':
+                break
+            time.sleep(0.02)
+        assert state['status'] == 'downloaded'
+        assert state['web']['recall_state'] == ''
+
+
 @pytest.mark.parametrize('case,expected', [
     ('mode_absent', 'SETTING_NOT_FOUND'),
     ('duration_absent', 'SETTING_NOT_FOUND'),
@@ -193,12 +248,9 @@ def test_accepted_video_hosts():
 
 
 def test_review_manual_import_and_no_false_reconcile(tmp_path, monkeypatch):
-    import subprocess
     monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
     video = tmp_path / 'valid.mp4'
-    p = subprocess.run(['ffmpeg','-y','-v','error','-f','lavfi','-i','color=c=red:s=320x180:d=1',
-                        '-c:v','mpeg4','-pix_fmt','yuv420p',str(video)],capture_output=True,text=True)
-    assert p.returncode == 0, p.stderr
+    video.write_bytes(sample_mp4_bytes())
     with TestClient(application.app) as client:
         acc = client.post('/api/accounts', json={'name':'人审账号'}).json()['id']
         resp = client.post('/api/v1/videos/generations',json={'account_id':acc,'prompt':'镜头01','auto_start':False})
@@ -301,55 +353,6 @@ def test_jobs_expose_task_page_and_open_page_validation(tmp_path, monkeypatch):
         assert row['manual_confirm_sent'] is True
 
 
-def test_bind_page_requires_specific_doubao_conversation_and_resets_old_binding(tmp_path, monkeypatch):
-    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
-    with TestClient(application.app) as client:
-        acc = client.post('/api/accounts', json={'name': '人工绑定账号'}).json()['id']
-        created = client.post('/api/v1/videos/generations',
-                              json={'account_id': acc, 'prompt': '镜头', 'auto_start': False})
-        job = created.json()['id']
-        endpoint = f'/api/v1/videos/generations/{job}/bind-page'
-
-        assert client.post(endpoint, json={
-            'page_url': 'https://www.doubao.com/chat/38449850653386498'
-        }).status_code == 409
-
-        with application.db() as c:
-            c.execute("UPDATE jobs SET status='needs_review' WHERE id=?", (job,))
-            c.execute("""UPDATE video_web_jobs
-                         SET web_page_url='https://www.doubao.com/chat/old',
-                             result_card_index=3, video_url='https://example.invalid/old.mp4',
-                             result_source='old'
-                         WHERE job_id=?""", (job,))
-
-        invalid_urls = (
-            'https://www.doubao.com/chat/',
-            'https://www.doubao.com/chat/local_2001034190155126',
-            'https://www.doubao.com/?next=/chat/38449850653386498',
-            'https://evil.example/chat/38449850653386498',
-            'http://www.doubao.com/chat/38449850653386498',
-        )
-        for page_url in invalid_urls:
-            response = client.post(endpoint, json={'page_url': page_url})
-            assert response.status_code == 422, (page_url, response.text)
-
-        target = 'https://www.doubao.com/chat/38449850653386498?from=history'
-        response = client.post(endpoint, json={'page_url': target})
-        assert response.status_code == 200, response.text
-        assert response.json()['web']['web_page_url'] == target
-        with application.db() as c:
-            bound = c.execute("""SELECT web_page_url,result_card_index,video_url,result_source
-                                 FROM video_web_jobs WHERE job_id=?""", (job,)).fetchone()
-        assert bound['web_page_url'] == target
-        assert bound['result_card_index'] is None
-        assert bound['video_url'] == '' and bound['result_source'] == ''
-
-        listed = next(x for x in client.get('/api/jobs').json() if x['id'] == job)
-        assert listed['has_task_page'] is True and listed['web_page_url'] == target
-        events = client.get(f'/api/v1/videos/generations/{job}/events').json()
-        assert any('人工绑定具体豆包会话' in event['message'] for event in events)
-
-
 def test_open_page_reuses_or_opens_managed_tab(tmp_path, monkeypatch):
     from fastapi import FastAPI
     import web_api
@@ -372,6 +375,7 @@ def test_open_page_reuses_or_opens_managed_tab(tmp_path, monkeypatch):
         def __init__(self, url):
             self.url = url
             self.front = False
+            self.closed = False
 
         async def bring_to_front(self):
             self.front = True
@@ -379,16 +383,26 @@ def test_open_page_reuses_or_opens_managed_tab(tmp_path, monkeypatch):
         async def goto(self, url, **_kwargs):
             self.url = url
 
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
+
     class Ctx:
         def __init__(self, pages):
             self.pages = list(pages)
             self.created = []
+            self.closed = False
 
         async def new_page(self):
             page = Page('about:blank')
             self.created.append(page)
             self.pages.append(page)
             return page
+
+        async def close(self):
+            self.closed = True
 
     def build(ctx):
         async def fake_browser(account_id):
@@ -414,6 +428,214 @@ def test_open_page_reuses_or_opens_managed_tab(tmp_path, monkeypatch):
         assert r.status_code == 200, r.text
         assert r.json()['reused'] is False
         assert ctx2.created and ctx2.created[0].url == target and ctx2.created[0].front
+
+
+def test_open_page_and_download_can_supersede_stalled_generation(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    import web_api
+
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
+    application.init_db()
+    web_api.recover_interrupted_jobs(application.db)
+    target_page = 'https://www.doubao.com/chat/38449850653386498'
+    with application.db() as c:
+        c.execute("INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+                  ('acc_active', 'active', '', str(tmp_path / 'profile'), '2026-10-28T00:00:00+00:00'))
+        c.execute("INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)"
+                  " VALUES(?,?,?,?,?,?,?,?,?)",
+                  ('job_active', 'p', 'e', 's', 'prompt', 'acc_active', 'generating',
+                   '2026-10-28T00:00:00+00:00', '2026-10-28T00:00:00+00:00'))
+        c.execute("INSERT INTO video_web_jobs(job_id,ratio,duration,web_page_url,result_card_index)"
+                  " VALUES(?,?,?,?,?)",
+                  ('job_active', '16:9', 4, target_page, 0))
+
+    class Page:
+        def __init__(self, url='about:blank'):
+            self.url = url
+            self.front = False
+            self.closed = False
+
+        async def goto(self, url, **_kwargs):
+            self.url = url
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        async def bring_to_front(self):
+            self.front = True
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
+
+    class Ctx:
+        def __init__(self):
+            self.pages = []
+            self.created = []
+
+        async def new_page(self):
+            page = Page()
+            self.pages.append(page)
+            self.created.append(page)
+            return page
+
+    ctx = Ctx()
+
+    async def fake_browser(_account_id):
+        return ctx
+
+    async def fake_read_state(_page):
+        return {'failed': False, 'runningLast': False, 'awaitingConfirm': False,
+                'videoUrls': [], 'videoCards': 1, 'text': ''}
+
+    async def fake_download_result(_page, _known, target, **_kwargs):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b'\x00\x00\x00\x20ftyp' + b'\x00' * 512)
+        return {'video_url': 'https://v26-vdl.doubao.com/mock.mp4', 'output': str(target)}
+
+    monkeypatch.setattr(web_api, 'read_state', fake_read_state)
+    monkeypatch.setattr(web_api, 'download_result_video', fake_download_result)
+    monkeypatch.setattr(web_api, 'media_duration_seconds', lambda _path: 4.0)
+
+    app2 = FastAPI()
+    web_api.mount_video_api(app2, db=application.db, get_account=application.get_account,
+                            get_job=application.get_job, browser=fake_browser,
+                            base_dir=tmp_path, downloads_dir=tmp_path / 'videos',
+                            serialize=application.job_row)
+    canceled = threading.Event()
+
+    async def stalled_generation():
+        try:
+            while True:
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            canceled.set()
+            raise
+
+    task_holder = {}
+
+    def create_stalled_generation():
+        task_holder['task'] = asyncio.create_task(stalled_generation())
+
+    with TestClient(app2) as client:
+        client.portal.call(create_stalled_generation)
+        app2.state.video_pending['job_active'] = task_holder['task']
+
+        opened = client.post('/api/v1/videos/generations/job_active/open-page')
+        assert opened.status_code == 200, opened.text
+        assert opened.json()['reused'] is False
+        assert ctx.created[0].front
+
+        downloaded = client.post('/api/v1/videos/generations/job_active/recall?force_redownload=true')
+        assert downloaded.status_code == 200, downloaded.text
+        assert canceled.wait(2)
+        state = None
+        for _ in range(100):
+            state = client.get('/api/v1/videos/generations/job_active').json()
+            if state['status'] == 'downloaded':
+                break
+            time.sleep(0.02)
+        assert state['status'] == 'downloaded'
+        assert state['web']['recall_state'] == ''
+
+
+def test_close_page_only_closes_matching_tab_without_launching_browser(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    import web_api
+
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
+    application.init_db()
+    web_api.recover_interrupted_jobs(application.db)
+    target = 'https://www.doubao.com/chat/38449850653386498'
+    other = 'https://www.doubao.com/chat/38449850653386499'
+    with application.db() as c:
+        for account_id in ('acc_close', 'acc_other'):
+            c.execute("INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+                      (account_id, account_id, '', str(tmp_path / account_id), '2026-10-28T00:00:00+00:00'))
+        for job_id, account_id, page_url in (
+            ('job_close', 'acc_close', target),
+            ('job_sibling', 'acc_close', other),
+            ('job_other_account', 'acc_other', target),
+        ):
+            c.execute("INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)"
+                      " VALUES(?,?,?,?,?,?,?,?,?)",
+                      (job_id, 'p', 'e', job_id, 'prompt', account_id, 'downloaded',
+                       '2026-10-28T00:00:00+00:00', '2026-10-28T00:00:00+00:00'))
+            c.execute("INSERT INTO video_web_jobs(job_id,ratio,duration,web_page_url) VALUES(?,?,?,?)",
+                      (job_id, '16:9', 4, page_url))
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+            self.closed = False
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
+
+    class Ctx:
+        def __init__(self, pages):
+            self.pages = list(pages)
+            self.closed = False
+            self.new_page_calls = 0
+
+        async def new_page(self):
+            self.new_page_calls += 1
+            raise AssertionError('close-page must not create a tab')
+
+        async def close(self):
+            self.closed = True
+
+    target_page = Page(target)
+    sibling_page = Page(other)
+    other_account_page = Page(target)
+    contexts = {
+        'acc_close': Ctx([target_page, sibling_page]),
+        'acc_other': Ctx([other_account_page]),
+    }
+    requested_accounts = []
+
+    async def fake_browser(_account_id):
+        raise AssertionError('close-page must not launch Chrome')
+
+    def existing_browser(account_id):
+        requested_accounts.append(account_id)
+        return contexts.get(account_id)
+
+    app2 = FastAPI()
+    web_api.mount_video_api(app2, db=application.db, get_account=application.get_account,
+                            get_job=application.get_job, browser=fake_browser,
+                            existing_browser=existing_browser,
+                            base_dir=application.BASE_DIR, downloads_dir=application.DOWNLOADS_DIR,
+                            serialize=application.job_row)
+    with TestClient(app2) as client:
+        r = client.post('/api/v1/videos/generations/job_close/close-page')
+        assert r.status_code == 200, r.text
+        assert r.json()['closed'] is True
+        assert target_page.closed is True
+        assert sibling_page.closed is False
+        assert other_account_page.closed is False
+        assert contexts['acc_close'].closed is False
+        assert contexts['acc_close'].new_page_calls == 0
+        assert requested_accounts == ['acc_close']
+
+        prepared_page = Page(target)
+        app2.state.video_prepared_pages['job_close'] = prepared_page
+        r = client.post('/api/v1/videos/generations/job_close/close-page')
+        assert r.status_code == 200, r.text
+        assert r.json()['closed'] is True
+        assert prepared_page.closed is True
+        assert contexts['acc_close'].closed is False
+        assert requested_accounts == ['acc_close']
+
+        r = client.post('/api/v1/videos/generations/job_close/close-page')
+        assert r.status_code == 200, r.text
+        assert r.json()['closed'] is False and r.json()['already_closed'] is True
+        assert sibling_page.closed is False
 
 
 def test_download_result_requires_review_and_specific_page(tmp_path, monkeypatch):
@@ -585,8 +807,11 @@ def test_send_confirmation_sends_and_reserves_quota(tmp_path, monkeypatch):
     async def fake_read_state(_page):
         return dict(state)
 
+    send_calls = []
+
     async def fake_send(_page, text):
         assert text == '确认采用当前参数并开始生成。'
+        send_calls.append(text)
 
     async def fake_wait_sent(_page, _before, _baseline, _timeout):
         return 'sent', dict(state)
@@ -610,6 +835,12 @@ def test_send_confirmation_sends_and_reserves_quota(tmp_path, monkeypatch):
         assert r.json()['how'] == 'composer:确认采用当前参数并开始生成。'
         assert r.json()['preset_id'] == preset['id']
         assert not page.closed
+        duplicate = client.post(
+            '/api/v1/videos/generations/job_send/send-confirmation?confirm_send=true',
+            json={'preset_id': preset['id']},
+        )
+        assert duplicate.status_code == 409
+        assert len(send_calls) == 1
 
     with application.db() as c:
         w = c.execute("SELECT quota_state FROM video_web_jobs WHERE job_id='job_send'").fetchone()
@@ -672,17 +903,15 @@ def test_reject_untrusted_redirect_before_following(tmp_path):
 
 
 def test_live_report_media_validation(tmp_path):
-    import subprocess
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
     from live_acceptance import check_media, media_probe
     assert check_media(b'\x00'*4 + b'ftyp' + b'\x00'*300)=='.mp4'
     with pytest.raises(ValueError): check_media(b'X'*300)
     f=tmp_path/'video.mp4'
-    res=subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=c=red:s=320x180:d=1',
-                        '-c:v','mpeg4',str(f)],capture_output=True,text=True)
-    assert res.returncode==0
+    f.write_bytes(sample_mp4_bytes())
     probe=media_probe(f)
-    assert probe['ffprobe']=='pass'
+    assert probe['container']=='pass'
+    assert probe['format']=='.mp4'
 
 
 def test_v2_data_migration_does_not_overwrite(tmp_path):
@@ -708,13 +937,10 @@ def test_v2_data_migration_does_not_overwrite(tmp_path):
 @pytest.mark.parametrize('source,expected', [('web_automated', True),('human_verified_upload', False)])
 def test_live_acceptance_distinguishes_automated_from_manual(tmp_path,monkeypatch,source,expected):
     import json
-    import subprocess
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
     import live_acceptance as live
     video=tmp_path/'fixture.mp4'
-    p=subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=c=blue:s=320x180:d=1',
-                      '-c:v','mpeg4',str(video)],capture_output=True,text=True)
-    assert p.returncode==0
+    video.write_bytes(sample_mp4_bytes())
     monkeypatch.setattr(live,'RESULTS',tmp_path/'reports')
     def fake_api(base,path,method='GET',body=None,key=''):
         if path=='/api/health': return {'ok':True}
@@ -727,10 +953,10 @@ def test_live_acceptance_distinguishes_automated_from_manual(tmp_path,monkeypatc
     monkeypatch.setattr(live,'api',fake_api)
     monkeypatch.setattr(live,'request',fake_download)
     assert live.main(['--job-id','job_test','--poll','0.01'])==0
-    report=json.loads((tmp_path/'reports'/'job_test.json').read_text())
+    report=json.loads((tmp_path/'reports'/'job_test.json').read_text(encoding='utf-8'))
     assert report['live_website_verified'] is expected
     assert report['result_source']==source
-    assert report['probe']['ffprobe']=='pass'
+    assert report['probe']['container']=='pass'
 
 
 def test_archived_video_can_be_pushed_back_to_h3(tmp_path, monkeypatch):

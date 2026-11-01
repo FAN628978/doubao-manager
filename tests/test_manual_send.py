@@ -3,7 +3,7 @@
 流程：H3 / API 建单 → 本机点击开始 → 脚本配置页面并填入提示词（不点发送）
 → 操作者在页面上亲自发送 → 出片后点击关联下载（recall）→ 归档。
 
-真实 Chromium + 本地合成 DOM；视频下载被 mock，不访问豆包官网，也不需要 ffmpeg。
+真实 Chromium + 本地合成 DOM；视频下载被 mock，不访问豆包官网，也不需要 ??????。
 """
 import asyncio
 import sys
@@ -272,8 +272,8 @@ def test_resend_same_job_links_latest_page_and_keeps_job_id(tmp_path, monkeypatc
                         break
                     await asyncio.sleep(0.05)
                 assert page_b.is_closed()
-                # 同一个任务只结算一次额度：旧占用被复用，没有重复占用。
-                assert state['quota']['consumed_seconds'] == 1
+                # 两次人工发送产生了两条视频，按两次生成结算额度。
+                assert state['quota']['consumed_seconds'] == 2
                 assert state['quota']['reserved_seconds'] == 0
 
                 again = await client.post(

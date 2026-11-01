@@ -35,7 +35,7 @@ for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING
 start "Doubao Account Desk" cmd /c "timeout /t 2 >nul & start http://127.0.0.1:8765"
 echo Doubao Account Desk 正在启动：http://127.0.0.1:8765
 echo 关闭本窗口即可停止本地服务。
-uv run --no-project --python ".venv\Scripts\python.exe" python -m uvicorn app:app --host 127.0.0.1 --port 8765
+uv run --no-project --python ".venv\Scripts\python.exe" python -m uvicorn app:app --app-dir src --host 127.0.0.1 --port 8765
 pause
 exit /b %errorlevel%
 

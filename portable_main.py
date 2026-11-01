@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import sys
 import threading
 import webbrowser
+from pathlib import Path
 
 import uvicorn
+
+SOURCE_DIR = Path(__file__).resolve().parent / "src"
+if str(SOURCE_DIR) not in sys.path:
+    sys.path.insert(0, str(SOURCE_DIR))
 
 from app import app
 

@@ -36,7 +36,8 @@ try {
         --clean `
         --onedir `
         --name $packageName `
-        --add-data "static;static" `
+        --paths "src" `
+        --add-data "src/static;static" `
         --collect-all playwright `
         portable_main.py
     if ($LASTEXITCODE -ne 0) {
