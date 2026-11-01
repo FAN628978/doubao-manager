@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import re
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
@@ -61,6 +62,13 @@ from .schema import default_processing_limit, ensure_schema as ensure_web_schema
 from .utils import adaptive_poll, automatic_step_delay, concise_job_title, safe, set_job_page_title, ts
 
 logger = logging.getLogger(__name__)
+
+
+def session_binding(url: str) -> tuple[str, str]:
+    """Return the persisted session URL and id for a recognizable Doubao chat URL."""
+    value = (url or "").strip()
+    match = re.search(r"/chat/([0-9A-Za-z_-]+)(?:[/?#]|$)", value)
+    return value, match.group(1) if match else ""
 
 
 def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloads_dir, serialize,
@@ -460,12 +468,24 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     "next_retry_at='' WHERE job_id=?",
                     (jobid,),
                 )
-            if url: c.execute("UPDATE video_web_jobs SET web_page_url=? WHERE job_id=?", (url, jobid))
+            if url:
+                session_url, session_id = session_binding(url)
+                c.execute(
+                    "UPDATE video_web_jobs SET web_page_url=?,session_url=?,session_id=? "
+                    "WHERE job_id=?",
+                    (url, session_url, session_id, jobid),
+                )
             if result:
                 relative = stored_path(Path(result["output"]), downloads)
                 c.execute("UPDATE jobs SET video_path=? WHERE id=?", (relative, jobid))
-                c.execute("UPDATE video_web_jobs SET video_url=?, web_page_url=?, error_code='', result_source=? WHERE job_id=?",
-                          (result["video_url"], result["web_page_url"], result_source, jobid))
+                result_url = result["web_page_url"]
+                session_url, session_id = session_binding(result_url)
+                c.execute(
+                    "UPDATE video_web_jobs SET video_url=?,web_page_url=?,session_url=?,"
+                    "session_id=?,error_code='',result_source=? WHERE job_id=?",
+                    (result["video_url"], result_url, session_url, session_id,
+                     result_source, jobid),
+                )
             c.execute("INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
                       (jobid,status,msg,now))
             settle_quota(c, jobid, status, prior_status=prior_status, error_code=code)
@@ -911,12 +931,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
                 async def manual_ready(page, state):
                     prepared_pages[jobid] = page
-                    url = state.get("url") or ""
+                    url, session_id = session_binding(state.get("url") or "")
                     with db() as c:
                         c.execute(
-                            "UPDATE video_web_jobs SET web_page_url=?,"
-                            "result_card_index=? WHERE job_id=?",
-                            (url, int(state.get("videoCards") or 0), jobid),
+                            "UPDATE video_web_jobs SET web_page_url=?,session_url=?,"
+                            "session_id=?,result_card_index=? WHERE job_id=?",
+                            (url, url, session_id,
+                             int(state.get("videoCards") or 0), jobid),
                         )
                     emit(
                         jobid, MANUAL_WAIT,
@@ -1575,7 +1596,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 raise HTTPException(409,"任务状态已变化，请刷新后再试")
             quota_reset = ",quota_day='',quota_state=''" if rematch_account else ""
             c.execute(f"""UPDATE video_web_jobs
-                         SET web_page_url='', result_card_index=NULL, video_url='', result_source='',
+                         SET web_page_url='', session_url='', session_id='',
+                             result_card_index=NULL, video_url='', result_source='',
                              error_code='', error_class='', next_retry_at='',
                              recall_state='', recall_token='', recall_started_at='',
                              dispatched_at='',
@@ -1890,6 +1912,208 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         await page.bring_to_front()
         return {"ok": True, "job_id": jobid, "url": url, "reused": False}
 
+    @app.post("/api/v1/videos/generations/{jobid}/open-window", tags=["Doubao Web Video"])
+    async def open_window(jobid: str, x_api_key: Optional[str] = Header(None)):
+        """Open the task in its account's managed browser window.
+
+        The browser context is the window boundary. Within that window this endpoint
+        reuses or creates only the task's conversation tab and clicks the persisted
+        video-card index; it never falls back to another task or the latest video.
+        """
+        auth(x_api_key); ensure_schema()
+        item = detail(jobid)
+        account_id = item.get("account_id")
+        if not account_id:
+            raise HTTPException(409, "任务所属账号已删除，无法打开该账号的独立浏览器窗口")
+
+        previous_context = existing_browser(account_id) if existing_browser is not None else None
+        ctx = await browser(account_id)
+        prepared = prepared_pages.get(jobid)
+        if prepared is not None and not prepared.is_closed():
+            page = prepared
+            page_reused = True
+        else:
+            prepared_pages.pop(jobid, None)
+            url = (item["web"].get("session_url")
+                   or item["web"].get("web_page_url") or "").strip()
+            if not url:
+                raise HTTPException(
+                    409,
+                    "已打开该账号的浏览器窗口，但任务尚未记录具体豆包会话页；"
+                    "请从豆包历史记录中人工查找，系统不会重新生成",
+                )
+            p = urlparse(url)
+            is_test_page = (os.getenv("DOUBAO_TEST_MODE") == "1"
+                            and p.scheme == "http"
+                            and p.hostname in ("127.0.0.1", "localhost"))
+            if not is_test_page:
+                if p.scheme != "https" or p.hostname not in ("doubao.com", "www.doubao.com"):
+                    raise HTTPException(422, "任务会话地址不是受信任的豆包地址")
+                if not CHAT_PAGE_URL.search(url):
+                    raise HTTPException(
+                        409,
+                        "任务只记录了通用对话页，无法定位具体分镜；"
+                        "请从豆包历史记录中人工查找，系统不会重新生成",
+                    )
+            key = url.split("?")[0]
+            page = None
+            page_reused = False
+            for existing in ctx.pages:
+                try:
+                    if (existing.url or "").split("?")[0] == key:
+                        page = existing
+                        page_reused = True
+                        break
+                except Exception:
+                    continue
+            if page is None:
+                page = await ctx.new_page()
+                await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                await page.wait_for_timeout(1200)
+
+        page_title = concise_job_title(
+            item.get("project_id", ""),
+            item.get("episode_id", ""),
+            item.get("shot_id", ""),
+            fallback=item.get("task_name") or jobid,
+        )
+        await set_job_page_title(page, page_title)
+        await page.bring_to_front()
+
+        state = await read_state(page)
+        live_url = (state.get("url") or getattr(page, "url", "") or "").strip()
+        if live_url and CHAT_PAGE_URL.search(live_url):
+            session_url, session_id = session_binding(live_url)
+            with db() as c:
+                c.execute(
+                    "UPDATE video_web_jobs SET web_page_url=?,session_url=?,session_id=? "
+                    "WHERE job_id=?",
+                    (session_url, session_url, session_id, jobid),
+                )
+        else:
+            session_url = item["web"].get("session_url") or ""
+            session_id = item["web"].get("session_id") or ""
+
+        raw_index = item["web"].get("result_card_index")
+        card_index = int(raw_index) if raw_index is not None else None
+        try:
+            locate_timeout = max(
+                0.0, float(os.getenv("DOUBAO_TASK_LOCATE_TIMEOUT", "15"))
+            )
+        except ValueError:
+            locate_timeout = 15.0
+        deadline = asyncio.get_running_loop().time() + locate_timeout
+        while True:
+            cards = int(state.get("videoCards") or 0)
+            if card_index is None and cards == 1:
+                card_index = 0
+                with db() as c:
+                    c.execute(
+                        "UPDATE video_web_jobs SET result_card_index=0 WHERE job_id=?",
+                        (jobid,),
+                    )
+            if card_index is not None and 0 <= card_index < cards:
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                if card_index is None and cards > 1:
+                    raise HTTPException(
+                        409,
+                        f"会话中有 {cards} 个视频，但任务缺少视频卡片绑定；"
+                        "为避免打开其他分镜的视频，系统没有猜测，也不会重新生成",
+                    )
+                if card_index is not None and card_index >= cards:
+                    raise HTTPException(
+                        409,
+                        f"任务绑定的第 {card_index + 1} 个视频卡片未在当前会话出现"
+                        f"（当前 {cards} 个）；系统不会改选其他视频，也不会重新生成",
+                    )
+                raise HTTPException(
+                    409,
+                    "任务会话已打开，但尚未找到可定位的视频卡片；"
+                    "请确认登录状态和生成结果，系统不会重新生成",
+                )
+            await page.wait_for_timeout(400)
+            state = await read_state(page)
+
+        card_clicked = await click_result_card(page, card_index)
+        message = (
+            "已激活该账号的浏览器窗口，并定位到任务绑定的视频卡片"
+            if card_clicked
+            else "已激活该账号的浏览器窗口并找到任务视频卡片，但未能打开视频详情"
+        )
+        return {
+            "ok": True,
+            "job_id": jobid,
+            "account_id": account_id,
+            "browser_open": True,
+            "window_reused": previous_context is not None,
+            "page_reused": page_reused,
+            "url": live_url,
+            "session_url": session_url,
+            "session_id": session_id,
+            "video_card_index": card_index,
+            "card_clicked": card_clicked,
+            "message": message,
+        }
+
+    @app.post("/api/v1/videos/generations/{jobid}/close-window", tags=["Doubao Web Video"])
+    async def close_window(jobid: str, x_api_key: Optional[str] = Header(None)):
+        """Close only this task's account browser window without touching the job."""
+        auth(x_api_key); ensure_schema()
+        item = detail(jobid)
+        account_id = item.get("account_id")
+        if not account_id:
+            raise HTTPException(409, "任务所属账号已删除，无法定位要关闭的浏览器窗口")
+        if close_browser is None:
+            raise HTTPException(503, "浏览器窗口管理服务尚未配置")
+
+        for other_jobid, task in list(pending.items()):
+            if task.done():
+                continue
+            try:
+                if get_job(other_jobid)["account_id"] == account_id:
+                    raise HTTPException(
+                        409,
+                        "该账号仍有生成任务在执行。关闭窗口不会取消任务，"
+                        "请等待当前步骤结束后再关闭",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                continue
+        account_pending = getattr(recovery_service, "account_pending", None)
+        if account_pending is not None and account_pending(account_id):
+            raise HTTPException(
+                409,
+                "该账号仍有恢复任务在执行。关闭窗口不会取消任务，请稍后再关闭",
+            )
+
+        was_open = (existing_browser(account_id) if existing_browser is not None else None) is not None
+        await close_browser(account_id)
+        for other_jobid, page in list(prepared_pages.items()):
+            try:
+                if get_job(other_jobid)["account_id"] != account_id:
+                    continue
+            except Exception:
+                continue
+            prepared_pages.pop(other_jobid, None)
+        with db() as c:
+            current = c.execute("SELECT status FROM jobs WHERE id=?", (jobid,)).fetchone()
+        return {
+            "ok": True,
+            "job_id": jobid,
+            "account_id": account_id,
+            "browser_open": False,
+            "closed": was_open,
+            "already_closed": not was_open,
+            "status": current["status"] if current else item.get("status"),
+            "message": (
+                "已关闭该账号的浏览器窗口；其他账号不受影响，登录状态和任务记录均已保留"
+                if was_open
+                else "该账号的浏览器窗口已经关闭；登录状态和任务记录均已保留"
+            ),
+        }
+
     @app.post("/api/v1/videos/generations/{jobid}/close-page", tags=["Doubao Web Video"])
     async def close_page(jobid: str, x_api_key: Optional[str] = Header(None)):
         """Close only this job's tab without closing the account's Chrome context."""
@@ -2151,7 +2375,12 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     (next_status, now, now, jobid),
                 )
                 if live and CHAT_PAGE_URL.search(live):
-                    c.execute("UPDATE video_web_jobs SET web_page_url=? WHERE job_id=?", (live, jobid))
+                    session_url, session_id = session_binding(live)
+                    c.execute(
+                        "UPDATE video_web_jobs SET web_page_url=?,session_url=?,session_id=? "
+                        "WHERE job_id=?",
+                        (live, session_url, session_id, jobid),
+                    )
                 c.execute("INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
                           (jobid, next_status, f"人工发送确认语预设“{preset['name']}”：{how}", ts()))
                 if w and (needs_new_attempt or not quota_held_today(w)):
@@ -2277,8 +2506,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                                        and p.hostname in ("127.0.0.1", "localhost")))
                         if live and trusted and CHAT_PAGE_URL.search(live):
                             url = live
+                            session_url, session_id = session_binding(url)
                             with db() as c:
-                                c.execute("UPDATE video_web_jobs SET web_page_url=? WHERE job_id=?", (url, jobid))
+                                c.execute(
+                                    "UPDATE video_web_jobs SET web_page_url=?,session_url=?,"
+                                    "session_id=? WHERE job_id=?",
+                                    (url, session_url, session_id, jobid),
+                                )
                     else:
                         prepared_pages.pop(jobid, None)
                         page = await ctx.new_page()

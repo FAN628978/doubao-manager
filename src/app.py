@@ -92,6 +92,11 @@ def db() -> sqlite3.Connection:
 
 def init_db() -> None:
     with db() as conn:
+        # Several accounts may now write job/event rows in parallel. WAL keeps
+        # readers from blocking writers and sharply reduces "database is locked"
+        # retries when a batch of jobs is admitted at once.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if current_version > DATA_SCHEMA_VERSION:
             raise RuntimeError(f"data 数据版本 {current_version} 高于当前软件支持的 {DATA_SCHEMA_VERSION}")
@@ -896,11 +901,18 @@ async def list_jobs():
     with db() as conn:
         rows = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC").fetchall()
         web_rows = (conn.execute(
-            "SELECT job_id, web_page_url, quota_state, task_name, submit_mode, duration, mode, ratio, model, error_code, recall_state, result_push_url, result_pushed_at, result_push_error, archived_at, dispatched_at FROM video_web_jobs").fetchall()
+            "SELECT job_id, web_page_url, session_url, session_id, result_card_index, "
+            "quota_state, task_name, submit_mode, duration, mode, ratio, model, "
+            "error_code, recall_state, result_push_url, result_pushed_at, "
+            "result_push_error, archived_at, dispatched_at "
+            "FROM video_web_jobs").fetchall()
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='video_web_jobs'").fetchone()
                     else [])
     web_meta = {r["job_id"]: {
         "web_page_url": r["web_page_url"] or "",
+        "session_url": r["session_url"] or "",
+        "session_id": r["session_id"] or "",
+        "result_card_index": r["result_card_index"],
         "quota_state": r["quota_state"] or "",
         "task_name": r["task_name"] or "",
         "submit_mode": r["submit_mode"] or "auto",
@@ -920,7 +932,7 @@ async def list_jobs():
     out = []
     for row in rows:
         meta = web_meta.get(row["id"])
-        page = meta["web_page_url"] if meta else ""
+        page = ((meta["session_url"] or meta["web_page_url"]) if meta else "")
         quota_state = meta["quota_state"] if meta else ""
         live_page = prepared_pages.get(row["id"])
         try:
@@ -932,6 +944,9 @@ async def list_jobs():
                     "is_web_generation": bool(meta),
                     "submit_mode": meta["submit_mode"] if meta else "auto",
                     "web_page_url": page,
+                    "session_url": meta["session_url"] if meta else "",
+                    "session_id": meta["session_id"] if meta else "",
+                    "result_card_index": meta["result_card_index"] if meta else None,
                     "has_task_page": bool(has_live_page or (page and CHAT_PAGE_URL.search(page))),
                     "duration": meta["duration"] if meta else None,
                     "mode": meta["mode"] if meta else "",

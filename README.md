@@ -25,7 +25,9 @@
 
 **暂停账号：** 账号管理中的“暂停使用”会让该账号退出新任务的自动选择，并拒绝用它新建、启动或人工发送生成任务；已经运行的任务不会被中断。暂停期间仍可打开浏览器维护登录状态或查看历史结果，点击“恢复使用”即可重新启用。
 
-**执行与队列：** 自动任务始终逐个执行，一个任务进入等待视频后，下一个任务立即开始准备和提交。`正在处理队列上限` 只限制机器正在执行的任务（打开页面到下载完成），默认 3；可将环境变量 `DOUBAO_MAX_CONCURRENT_ACCOUNTS` 设置为其他正整数，设为 `0` 表示不限制。任务进入“待人工”（人工发送 / 需人工复查）或结束（已下载 / 失败）时释放队列名额；账号页面和额度占用仍按各自规则保留。
+**执行与队列：** 自动任务按账号并行：不同账号可以同时准备、提交、确认和下载，同一账号始终只有一个任务在操作浏览器。`正在处理队列上限` 只限制机器正在执行的任务（打开页面到下载完成），默认 3，建议按账号数量调整；可将环境变量 `DOUBAO_MAX_CONCURRENT_ACCOUNTS` 设置为其他正整数，设为 `0` 表示不限制。任务进入“待人工”（人工发送 / 需人工复查）或结束（已下载 / 失败）时释放队列名额；账号页面和额度占用仍按各自规则保留。
+
+**防卡死：** 已放行但没有 worker 的自动任务由后台队列 tick（默认每 5 秒）自动重新派发，不需要再点一次“进入调度”；等账号超过 `DOUBAO_ACCOUNT_WAIT_TIMEOUT`（默认 600 秒）会退回自动重试；同一阶段超过 `DOUBAO_STALL_PREPARE_SECONDS`（默认 300）、`DOUBAO_STALL_DOWNLOADING_SECONDS`（默认 600）或 `DOUBAO_STALL_GENERATING_SECONDS`（默认 1080）无进展会被强制中断并释放账号/名额；结果回推改为后台任务，不再占用任务槽。`needs_review` 任务结束后也会释放账号锁，不会因为异常任务越积越多而把队列锁死。
 
 **账号分配：** “待处理”里的任务不分配账号、也不预占额度。只有任务真正拿到“正在处理”名额、进入处理前一刻，才会挑选账号并预占额度；调用方显式传 `account_id` 时沿用该账号。操作者也可以在进入处理前用 `POST /api/jobs/{id}/account` 手动指定或清空账号（清空后由系统在分配时决定）。复制 / 重试生成的任务会优先避开原任务用过的账号。
 
@@ -242,7 +244,8 @@ Host lzg
 | GET | `/api/v1/videos/generations/{id}` | 查询任务状态、生成参数、归档信息 |
 | GET | `/api/v1/videos/generations/{id}/events` | 查看状态事件与错误 |
 | POST | `/api/v1/videos/generations/{id}/recall` | 幂等召回原任务：复用原会话并按绑定卡片归档；数据库锁防止重复召回，绝不重新提交生成 |
-| POST | `/api/v1/videos/generations/{id}/open-page` | 在任务所属账号的托管 Chrome 中打开已记录的豆包会话页；已有同页标签时直接切到前台 |
+| POST | `/api/v1/videos/generations/{id}/open-window` | 激活任务所属账号的独立托管 Chrome 窗口；复用或打开对应会话标签，并按已持久化的视频卡片序号定位 |
+| POST | `/api/v1/videos/generations/{id}/close-window` | 只关闭任务所属账号的浏览器窗口，不取消任务、不删除登录状态或生成结果 |
 | GET/POST/PUT/DELETE | `/api/v1/videos/confirmation-presets` | 查询、新增、编辑或删除确认语预设；默认预设可编辑但不可删除，自动执行遇到确认步骤时实时使用该默认预设 |
 | POST | `/api/v1/videos/generations/{id}/send-confirmation?confirm_send=true` | 从请求体选择 `preset_id`，随时向任务已记录的豆包会话页发送该确认语；重复发送可能再次触发生成或消耗额度 |
 | POST | `/api/v1/videos/generations/{id}/download-result?confirm_review=true` | 兼容旧调用；内部使用统一召回流程 |

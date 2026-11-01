@@ -23,8 +23,13 @@ def test_schema_migrates_delivery_columns_before_creating_index(tmp_path):
                 result_push_error TEXT DEFAULT ''
             );
             INSERT INTO video_web_jobs(
-                job_id, result_push_url, result_push_error
-            ) VALUES('legacy_job', 'http://127.0.0.1/callback', 'old push failure');
+                job_id, web_page_url, result_push_url, result_push_error
+            ) VALUES(
+                'legacy_job',
+                'https://www.doubao.com/chat/38449850653386498',
+                'http://127.0.0.1/callback',
+                'old push failure'
+            );
             """
         )
 
@@ -44,6 +49,8 @@ def test_schema_migrates_delivery_columns_before_creating_index(tmp_path):
             "delivery_attempts",
             "delivery_next_retry_at",
             "delivery_error",
+            "session_url",
+            "session_id",
         } <= columns
 
         delivery = conn.execute(
@@ -53,6 +60,12 @@ def test_schema_migrates_delivery_columns_before_creating_index(tmp_path):
         assert delivery["delivery_state"] == "failed"
         assert delivery["delivery_attempts"] == 1
         assert delivery["delivery_error"] == "old push failure"
+        session = conn.execute(
+            "SELECT session_url,session_id FROM video_web_jobs "
+            "WHERE job_id='legacy_job'"
+        ).fetchone()
+        assert session["session_url"] == "https://www.doubao.com/chat/38449850653386498"
+        assert session["session_id"] == "38449850653386498"
 
         indexes = {
             row["name"] for row in conn.execute("PRAGMA index_list(video_web_jobs)")

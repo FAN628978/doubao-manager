@@ -24,6 +24,7 @@ _SYNCED_AUTOMATION_NAMES = (
     "persisted_url",
     "read_state",
     "read_composer_state",
+    "click_result_card",
     "download_result_video",
     "download_media",
     "media_duration_seconds",

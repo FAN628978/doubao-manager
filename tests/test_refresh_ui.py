@@ -339,6 +339,7 @@ def test_row_signature_covers_every_rendered_field():
     must_have = {
         "id", "status", "archived", "archived_at", "account_id", "video_path",
         "submit_mode", "task_name", "has_task_page", "web_page_url",
+        "session_url", "session_id", "result_card_index",
         "recall_state", "can_push_result", "result_pushed_at",
         "result_push_error", "error_code", "updated_at",
     }

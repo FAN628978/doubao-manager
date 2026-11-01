@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from .config import CONFIRM_ANSWER
 from .utils import ts
@@ -29,6 +30,8 @@ def ensure_schema(db) -> None:
                 idempotency_key TEXT UNIQUE,
                 video_url TEXT DEFAULT '',
                 web_page_url TEXT DEFAULT '',
+                session_url TEXT DEFAULT '',
+                session_id TEXT DEFAULT '',
                 error_code TEXT DEFAULT '',
                 mode TEXT DEFAULT 'text2video',
                 assets_json TEXT DEFAULT '{}',
@@ -121,6 +124,11 @@ def ensure_schema(db) -> None:
             ("quota_day", "TEXT DEFAULT ''"),
             ("quota_state", "TEXT DEFAULT ''"),
             ("task_name", "TEXT DEFAULT ''"),
+            # Keep the original web_page_url field for existing callers. These two
+            # fields make the persisted conversation binding explicit for window
+            # reopening, while result_card_index remains the video-card binding.
+            ("session_url", "TEXT DEFAULT ''"),
+            ("session_id", "TEXT DEFAULT ''"),
             ("result_card_index", "INTEGER"),
             ("recall_state", "TEXT DEFAULT ''"),
             ("recall_token", "TEXT DEFAULT ''"),
@@ -152,6 +160,25 @@ def ensure_schema(db) -> None:
         for name, ddl in migrations:
             if name not in columns:
                 c.execute(f"ALTER TABLE video_web_jobs ADD COLUMN {name} {ddl}")
+
+        # Backfill historical jobs. session_url is only populated from a recognizable
+        # chat URL; unsupported generic pages are left untouched for explicit review.
+        legacy_sessions = c.execute(
+            "SELECT job_id,web_page_url,session_url,session_id FROM video_web_jobs "
+            "WHERE web_page_url!='' OR session_url!=''"
+        ).fetchall()
+        for row in legacy_sessions:
+            url = (row["session_url"] or row["web_page_url"] or "").strip()
+            match = re.search(r"/chat/([0-9A-Za-z_-]+)(?:[/?#]|$)", url)
+            if not match:
+                continue
+            session_url = row["session_url"] or row["web_page_url"]
+            session_id = match.group(1)
+            if session_url != row["session_url"] or session_id != row["session_id"]:
+                c.execute(
+                    "UPDATE video_web_jobs SET session_url=?,session_id=? WHERE job_id=?",
+                    (session_url, session_id, row["job_id"]),
+                )
 
         c.execute(
             "CREATE INDEX IF NOT EXISTS idx_video_web_delivery "

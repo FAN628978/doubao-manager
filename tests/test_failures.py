@@ -430,6 +430,176 @@ def test_open_page_reuses_or_opens_managed_tab(tmp_path, monkeypatch):
         assert ctx2.created and ctx2.created[0].url == target and ctx2.created[0].front
 
 
+def test_open_window_targets_only_the_bound_task_card(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    import web_api
+
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
+    application.init_db()
+    web_api.recover_interrupted_jobs(application.db)
+    target = 'https://www.doubao.com/chat/38449850653386498'
+    other = 'https://www.doubao.com/chat/38449850653386499'
+    with application.db() as c:
+        c.execute("INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+                  ('acc_window', 'window', '', str(tmp_path / 'profile'),
+                   '2026-10-28T00:00:00+00:00'))
+        c.execute("INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)"
+                  " VALUES(?,?,?,?,?,?,?,?,?)",
+                  ('job_window', 'GB-上端', '第1集', '9', 'prompt', 'acc_window',
+                   'downloaded', '2026-10-28T00:00:00+00:00',
+                   '2026-10-28T00:00:00+00:00'))
+        c.execute("INSERT INTO video_web_jobs(job_id,ratio,duration,web_page_url,result_card_index)"
+                  " VALUES(?,?,?,?,?)",
+                  ('job_window', '16:9', 4, target, 1))
+
+    class Page:
+        def __init__(self, url):
+            self.url = url
+            self.front = False
+            self.closed = False
+
+        async def goto(self, url, **_kwargs):
+            self.url = url
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        async def bring_to_front(self):
+            self.front = True
+
+        def is_closed(self):
+            return self.closed
+
+    class Ctx:
+        def __init__(self):
+            self.pages = [Page(other)]
+            self.created = []
+
+        async def new_page(self):
+            page = Page('about:blank')
+            self.pages.append(page)
+            self.created.append(page)
+            return page
+
+    ctx = Ctx()
+    clicks = []
+
+    async def fake_browser(account_id):
+        assert account_id == 'acc_window'
+        return ctx
+
+    async def fake_read_state(_page):
+        return {'url': target, 'videoCards': 3, 'videoUrls': []}
+
+    async def fake_click(_page, card_index):
+        clicks.append(card_index)
+        return True
+
+    monkeypatch.setattr(web_api, 'read_state', fake_read_state)
+    monkeypatch.setattr(web_api, 'click_result_card', fake_click)
+    app2 = FastAPI()
+    web_api.mount_video_api(
+        app2, db=application.db, get_account=application.get_account,
+        get_job=application.get_job, browser=fake_browser,
+        existing_browser=lambda _account_id: ctx,
+        base_dir=application.BASE_DIR, downloads_dir=application.DOWNLOADS_DIR,
+        serialize=application.job_row,
+    )
+
+    with TestClient(app2) as client:
+        r = client.post('/api/v1/videos/generations/job_window/open-window')
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body['window_reused'] is True
+        assert body['page_reused'] is False
+        assert body['video_card_index'] == 1
+        assert body['card_clicked'] is True
+        assert body['session_id'] == '38449850653386498'
+        assert clicks == [1]
+        assert ctx.created and ctx.created[0].front
+        assert ctx.pages[0].url == other
+
+    with application.db() as c:
+        row = c.execute(
+            "SELECT session_url,session_id FROM video_web_jobs WHERE job_id='job_window'"
+        ).fetchone()
+    assert row['session_url'] == target
+    assert row['session_id'] == '38449850653386498'
+
+
+def test_open_window_refuses_to_guess_ambiguous_video_card(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    import web_api
+
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
+    monkeypatch.setenv('DOUBAO_TASK_LOCATE_TIMEOUT', '0')
+    application.init_db()
+    web_api.recover_interrupted_jobs(application.db)
+    target = 'https://www.doubao.com/chat/38449850653386498'
+    with application.db() as c:
+        c.execute("INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+                  ('acc_ambiguous', 'ambiguous', '', str(tmp_path / 'profile'),
+                   '2026-10-28T00:00:00+00:00'))
+        c.execute("INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)"
+                  " VALUES(?,?,?,?,?,?,?,?,?)",
+                  ('job_ambiguous', 'p', 'e', 's', 'prompt', 'acc_ambiguous',
+                   'needs_review', '2026-10-28T00:00:00+00:00',
+                   '2026-10-28T00:00:00+00:00'))
+        c.execute("INSERT INTO video_web_jobs(job_id,ratio,duration,web_page_url)"
+                  " VALUES(?,?,?,?)",
+                  ('job_ambiguous', '16:9', 4, target))
+
+    class Page:
+        url = target
+
+        async def wait_for_timeout(self, _ms):
+            return None
+
+        async def bring_to_front(self):
+            return None
+
+    class Ctx:
+        pages = [Page()]
+
+        async def new_page(self):
+            raise AssertionError('an existing task tab should be reused')
+
+    async def fake_browser(_account_id):
+        return Ctx()
+
+    clicked = []
+
+    async def fake_read_state(_page):
+        return {'url': target, 'videoCards': 2, 'videoUrls': []}
+
+    async def fake_click(_page, card_index):
+        clicked.append(card_index)
+        return True
+
+    monkeypatch.setattr(web_api, 'read_state', fake_read_state)
+    monkeypatch.setattr(web_api, 'click_result_card', fake_click)
+    app2 = FastAPI()
+    web_api.mount_video_api(
+        app2, db=application.db, get_account=application.get_account,
+        get_job=application.get_job, browser=fake_browser,
+        existing_browser=lambda _account_id: Ctx(),
+        base_dir=application.BASE_DIR, downloads_dir=application.DOWNLOADS_DIR,
+        serialize=application.job_row,
+    )
+
+    with TestClient(app2) as client:
+        r = client.post('/api/v1/videos/generations/job_ambiguous/open-window')
+        assert r.status_code == 409
+        assert '缺少视频卡片绑定' in r.json()['detail']
+        assert '不会重新生成' in r.json()['detail']
+    assert clicked == []
+    with application.db() as c:
+        row = c.execute(
+            "SELECT status FROM jobs WHERE id='job_ambiguous'"
+        ).fetchone()
+    assert row['status'] == 'needs_review'
+
+
 def test_open_page_and_download_can_supersede_stalled_generation(tmp_path, monkeypatch):
     from fastapi import FastAPI
     import web_api
@@ -636,6 +806,73 @@ def test_close_page_only_closes_matching_tab_without_launching_browser(tmp_path,
         assert r.status_code == 200, r.text
         assert r.json()['closed'] is False and r.json()['already_closed'] is True
         assert sibling_page.closed is False
+
+
+def test_close_window_only_closes_the_job_account_without_changing_job(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    import web_api
+
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
+    application.init_db()
+    web_api.recover_interrupted_jobs(application.db)
+    with application.db() as c:
+        for account_id in ('acc_close_window', 'acc_keep_window'):
+            c.execute("INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+                      (account_id, account_id, '', str(tmp_path / account_id),
+                       '2026-10-28T00:00:00+00:00'))
+        for job_id, account_id in (
+            ('job_close_window', 'acc_close_window'),
+            ('job_keep_window', 'acc_keep_window'),
+        ):
+            c.execute("INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)"
+                      " VALUES(?,?,?,?,?,?,?,?,?)",
+                      (job_id, 'p', 'e', job_id, 'prompt', account_id, 'downloaded',
+                       '2026-10-28T00:00:00+00:00',
+                       '2026-10-28T00:00:00+00:00'))
+            c.execute("INSERT INTO video_web_jobs(job_id,ratio,duration) VALUES(?,?,?)",
+                      (job_id, '16:9', 4))
+
+    contexts = {
+        'acc_close_window': object(),
+        'acc_keep_window': object(),
+    }
+    close_calls = []
+
+    async def fake_browser(_account_id):
+        raise AssertionError('close-window must not launch or activate Chrome')
+
+    async def fake_close_browser(account_id):
+        close_calls.append(account_id)
+
+    app2 = FastAPI()
+    web_api.mount_video_api(
+        app2, db=application.db, get_account=application.get_account,
+        get_job=application.get_job, browser=fake_browser,
+        existing_browser=contexts.get, close_browser=fake_close_browser,
+        base_dir=application.BASE_DIR, downloads_dir=application.DOWNLOADS_DIR,
+        serialize=application.job_row,
+    )
+
+    with TestClient(app2) as client:
+        r = client.post('/api/v1/videos/generations/job_close_window/close-window')
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body['closed'] is True
+        assert body['browser_open'] is False
+        assert body['status'] == 'downloaded'
+        assert close_calls == ['acc_close_window']
+
+    with application.db() as c:
+        job = c.execute(
+            "SELECT status FROM jobs WHERE id='job_close_window'"
+        ).fetchone()
+        result = c.execute(
+            "SELECT video_url,result_source FROM video_web_jobs "
+            "WHERE job_id='job_close_window'"
+        ).fetchone()
+    assert job['status'] == 'downloaded'
+    assert result['video_url'] == ''
+    assert result['result_source'] == ''
 
 
 def test_download_result_requires_review_and_specific_page(tmp_path, monkeypatch):
