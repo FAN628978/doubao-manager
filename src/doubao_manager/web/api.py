@@ -2576,12 +2576,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                                 page, set(state.get("videoUrls") or []), target,
                                 card_index=card_index, allow_known=True)
                             path = result["output"]
-                            got = media_duration_seconds(path)
-                            want = int(item["web"].get("duration") or 0)
-                            if got is not None and want and abs(got - want) > 1.5:
-                                Path(path).unlink(missing_ok=True)
-                                raise ReviewNeeded("DURATION_MISMATCH",
-                                                   f"下载视频时长 {got:.1f}s 与任务 {want}s 不符，未归档")
                             await finish_downloaded(
                                 jobid,
                                 "已关联人工发送后生成的视频并归档（无水印成片）" if is_manual

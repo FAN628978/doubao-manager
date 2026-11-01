@@ -804,8 +804,8 @@ async def download_media(page, url: str, target: Path):
 def media_duration_seconds(path) -> Optional[float]:
     """Best-effort MP4 duration from the movie header. None when it cannot be read.
 
-    Used by the manual page-recovery path to refuse a video whose length does not match
-    the job's requested duration (for example an older result card in the conversation).
+    Kept for media diagnostics. Result archival relies on the persisted card
+    binding rather than rejecting a generated video whose duration differs.
     """
     try:
         data = Path(path).read_bytes()
