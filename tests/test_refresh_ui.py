@@ -79,12 +79,35 @@ class Server:
     def __init__(self):
         self.jobs = []
         self.fail = False
+        self.feedback_delay = 0
+        self.feedback_error = False
+        self.feedback_requests = 0
 
     async def handle(self, route):
         url = route.request.url
         if self.fail:
             await route.fulfill(status=500, body='{"detail":"本地服务不可用"}',
                                 content_type="application/json")
+            return
+        if url.endswith("/api/test/feedback"):
+            self.feedback_requests += 1
+            if self.feedback_delay:
+                await asyncio.sleep(self.feedback_delay)
+            if self.feedback_error:
+                await route.fulfill(
+                    status=500,
+                    content_type="application/json",
+                    body='{"detail":"反馈测试失败"}',
+                )
+            else:
+                await route.fulfill(status=200, content_type="application/json",
+                                    body='{"ok":true}')
+            return
+        if url.endswith("/api/test/feedback-chain"):
+            if self.feedback_delay:
+                await asyncio.sleep(self.feedback_delay)
+            await route.fulfill(status=200, content_type="application/json",
+                                body='{"ok":true}')
             return
         if url.endswith("/api/jobs"):
             await route.fulfill(status=200, content_type="application/json",
@@ -591,3 +614,184 @@ def test_frontend_assets_are_not_cached(tmp_path, monkeypatch):
         # API 响应不受影响。
         api = client.get("/api/health")
         assert api.headers.get("cache-control") is None
+
+
+def _add_feedback_button(page, label, endpoint, refresh_after=False):
+    return page.evaluate(
+        """({label, endpoint, refreshAfter}) => {
+            const button = document.createElement('button');
+            button.id = 'feedbackTest';
+            button.className = 'btn primary';
+            button.textContent = label;
+            button.dataset.clicks = '0';
+            button.addEventListener('click', async () => {
+                button.dataset.clicks = String(Number(button.dataset.clicks) + 1);
+                try {
+                    await api(endpoint);
+                    if (refreshAfter) await refreshAll();
+                    toast('测试操作成功');
+                } catch (error) {
+                    toast(error.message, true);
+                }
+            });
+            document.body.appendChild(button);
+        }""",
+        {"label": label, "endpoint": endpoint, "refreshAfter": refresh_after},
+    )
+
+
+def test_button_feedback_loading_success_and_duplicate_click_guard():
+    async def run():
+        server = Server()
+        server.feedback_delay = 2.0
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await _add_feedback_button(page, "测试操作", "/api/test/feedback")
+                button = page.locator("#feedbackTest")
+                await button.click()
+                await page.wait_for_selector("#feedbackTest.is-loading")
+                loading = await page.evaluate(
+                    """() => {
+                        const button = document.querySelector('#feedbackTest');
+                        return {
+                            text: button.textContent,
+                            disabled: button.disabled,
+                            ariaBusy: button.getAttribute('aria-busy'),
+                        };
+                    }"""
+                )
+                assert "处理中" in loading["text"], loading
+                assert loading["disabled"] is True, loading
+                assert loading["ariaBusy"] == "true", loading
+
+                await page.evaluate("() => document.querySelector('#feedbackTest').click()")
+                await page.evaluate("() => document.querySelector('#feedbackTest').click()")
+                assert await button.get_attribute("data-clicks") == "1"
+                assert server.feedback_requests == 1
+
+                await page.wait_for_selector("#feedbackTest.is-success", timeout=6000)
+                assert "已完成" in await button.inner_text()
+                assert await button.is_disabled()
+                await page.wait_for_function(
+                    """() => {
+                        const button = document.querySelector('#feedbackTest');
+                        return !button.classList.contains('is-loading')
+                            && !button.classList.contains('is-success')
+                            && !button.disabled
+                            && button.textContent === '测试操作';
+                    }""",
+                    timeout=3000,
+                )
+                assert await button.get_attribute("aria-busy") is None
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_button_feedback_error_is_visible_and_restores_button():
+    async def run():
+        server = Server()
+        server.feedback_delay = 0.05
+        server.feedback_error = True
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await _add_feedback_button(page, "失败操作", "/api/test/feedback")
+                button = page.locator("#feedbackTest")
+                await button.click()
+                await page.wait_for_function(
+                    "() => document.querySelector('#toast').classList.contains('error')"
+                )
+                assert "反馈测试失败" in await page.locator("#toast").inner_text()
+                await page.wait_for_function(
+                    """() => {
+                        const button = document.querySelector('#feedbackTest');
+                        return !button.classList.contains('is-loading')
+                            && !button.disabled
+                            && button.textContent === '失败操作';
+                    }""",
+                    timeout=3000,
+                )
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_consecutive_api_calls_keep_original_button_content():
+    async def run():
+        server = Server()
+        server.feedback_delay = 0.05
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await _add_feedback_button(
+                    page, "连续操作", "/api/test/feedback-chain", refresh_after=True
+                )
+                await page.locator("#feedbackTest").click()
+                await page.wait_for_function(
+                    """() => {
+                        const button = document.querySelector('#feedbackTest');
+                        return !button.classList.contains('is-loading')
+                            && !button.classList.contains('is-success')
+                            && !button.disabled
+                            && button.textContent === '连续操作';
+                    }""",
+                    timeout=4000,
+                )
+                assert "处理中" not in await page.locator("#feedbackTest").inner_text()
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_button_styles_cover_states_focus_and_reduced_motion():
+    for selector in (
+        ".btn:hover:not(:disabled)",
+        ".btn:active:not(:disabled)",
+        ".btn.is-loading",
+        ".btn.is-success",
+        "button:focus-visible",
+        "@media(prefers-reduced-motion:reduce)",
+    ):
+        assert selector in STYLES, selector
+
+
+def test_mobile_buttons_do_not_clip_labels():
+    async def run():
+        server = Server()
+        server.jobs = [_job("job_a", status="downloaded", video_path="job_a.mp4")]
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.set_viewport_size({"width": 390, "height": 844})
+                await page.evaluate("() => switchView('accounts')")
+                assert await page.evaluate(
+                    """() => [...document.querySelectorAll('button')]
+                        .filter(button => button.offsetParent !== null)
+                        .every(button => button.scrollWidth <= button.clientWidth + 1
+                            && button.scrollHeight <= button.clientHeight + 1)"""
+                )
+                await page.evaluate(
+                    "() => {switchView('jobs');setJobSection('finished')}"
+                )
+                await page.wait_for_timeout(150)
+                clipped = await page.evaluate(
+                    """() => [...document.querySelectorAll('button')]
+                        .filter(button => button.offsetParent !== null)
+                        .filter(button => button.scrollWidth > button.clientWidth + 1
+                            || button.scrollHeight > button.clientHeight + 1)
+                        .map(button => button.textContent.trim())"""
+                )
+                assert clipped == [], clipped
+            finally:
+                await browser.close()
+
+    asyncio.run(run())

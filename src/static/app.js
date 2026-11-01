@@ -2,14 +2,147 @@
   const viewNames = {overview:'工作概览',accounts:'账号管理',jobs:'分镜任务',integration:'API 接入'};
   const statusLabels = {queued:['排队中','yellow'],ready:['待人工提交','blue'],opening:['打开页面','blue'],configuring:['配置参数','blue'],uploading:['上传素材','blue'],downloading:['下载视频','blue'],submitting:['提交中','blue'],confirming:['发送确认语','blue'],generating:['生成中','blue'],awaiting_manual_send:['待人工发送','yellow'],needs_review:['需人工处理','red'],downloaded:['已归档','green'],failed:['失败','red']};
   const $ = (id) => document.getElementById(id);
+  const buttonFeedback = new WeakMap();
+  let pendingButtonInteraction = null;
+  let interactionSequence = 0;
+  let pendingClickTimer;
+  function clearPendingButtonInteraction(){
+    pendingButtonInteraction=null;
+    clearTimeout(pendingClickTimer);
+  }
+  function rememberButton(button){
+    if(!button)return;
+    pendingButtonInteraction={button,token:++interactionSequence};
+    clearTimeout(pendingClickTimer);
+    const token=pendingButtonInteraction.token;
+    pendingClickTimer=setTimeout(()=>{
+      if(pendingButtonInteraction?.token===token)clearPendingButtonInteraction();
+    },1200);
+  }
+  function rememberButtonInteraction(event){
+    const button=event.target instanceof Element?event.target.closest('button'):null;
+    if(!button){clearPendingButtonInteraction();return;}
+    rememberButton(button);
+  }
+  function rememberSubmitInteraction(event){
+    const button=event.submitter instanceof HTMLButtonElement?event.submitter:null;
+    if(!button)return;
+    if(pendingButtonInteraction?.button===button)return;
+    rememberButton(button);
+  }
+  document.addEventListener('click',rememberButtonInteraction,true);
+  document.addEventListener('submit',rememberSubmitInteraction,true);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)clearPendingButtonInteraction()});
+  window.addEventListener('focus',clearPendingButtonInteraction);
+  function setButtonLoading(button,feedback){
+    feedback.phase='loading';
+    button.classList.remove('is-success');
+    button.classList.add('is-loading');
+    button.dataset.feedbackMode=feedback.native?'native':'replace';
+    button.setAttribute('aria-busy','true');
+    if(!feedback.native){
+      button.disabled=true;
+      button.innerHTML='<span class="button-spinner" aria-hidden="true"></span><span>处理中…</span>';
+    }
+  }
+  function beginButtonFeedback(interaction){
+    if(!interaction?.button?.isConnected)return null;
+    const button=interaction.button;
+    let feedback=buttonFeedback.get(button);
+    if(feedback&&feedback.token!==interaction.token){
+      restoreButtonFeedback(button,feedback);
+      feedback=null;
+    }
+    const sameInteraction=feedback&&feedback.token===interaction.token&&feedback.captured&&feedback.phase!=='success';
+    if(!sameInteraction){
+      feedback={
+        token:interaction.token,
+        count:0,
+        native:button.disabled,
+        failed:false,
+        captured:true,
+        phase:'idle',
+        idleTimer:null,
+        successTimer:null,
+        originalHtml:button.innerHTML,
+        originalDisabled:button.disabled,
+        originalAriaBusy:button.getAttribute('aria-busy'),
+      };
+      buttonFeedback.set(button,feedback);
+    }
+    clearTimeout(feedback.idleTimer);
+    feedback.count++;
+    if(feedback.count===1)setButtonLoading(button,feedback);
+    return{button,feedback};
+  }
+  function clearPendingForFeedback(feedback){
+    if(pendingButtonInteraction?.token===feedback.token){
+      clearPendingButtonInteraction();
+    }
+  }
+  function restoreButtonFeedback(button,feedback){
+    clearTimeout(feedback.idleTimer);
+    clearTimeout(feedback.successTimer);
+    feedback.count=0;
+    feedback.captured=false;
+    feedback.phase='idle';
+    clearPendingForFeedback(feedback);
+    if(!button.isConnected)return;
+    button.classList.remove('is-loading','is-success');
+    delete button.dataset.feedbackMode;
+    if(!feedback.native){
+      button.innerHTML=feedback.originalHtml;
+      button.disabled=feedback.originalDisabled;
+    }
+    if(feedback.originalAriaBusy===null)button.removeAttribute('aria-busy');
+    else button.setAttribute('aria-busy',feedback.originalAriaBusy);
+  }
+  function finishButtonFeedback(session){
+    const {button,feedback}=session;
+    if(feedback.count||feedback.phase!=='loading')return;
+    if(feedback.failed||feedback.native||!button.isConnected){
+      restoreButtonFeedback(button,feedback);
+      return;
+    }
+    feedback.phase='success';
+    clearPendingForFeedback(feedback);
+    button.classList.remove('is-loading');
+    button.classList.add('is-success');
+    button.innerHTML='<span class="button-check" aria-hidden="true">✓</span><span>已完成</span>';
+    button.disabled=true;
+    button.setAttribute('aria-busy','false');
+    feedback.successTimer=setTimeout(()=>restoreButtonFeedback(button,feedback),620);
+  }
+  function endButtonFeedback(session,ok){
+    if(!session)return;
+    const {button,feedback}=session;
+    feedback.count=Math.max(0,feedback.count-1);
+    if(!ok)feedback.failed=true;
+    if(feedback.count)return;
+    clearTimeout(feedback.idleTimer);
+    feedback.idleTimer=setTimeout(()=>finishButtonFeedback(session),140);
+  }
   function esc(v){return String(v ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
   function shortDate(v){if(!v)return '—';try{return new Date(v).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});}catch{return v;}}
   function statusPill(s){const item=statusLabels[s]||['未知','gray'];return `<span class="pill ${item[1]}">${item[0]}</span>`;}
   function quotaDuration(seconds){const total=Math.max(0,Math.round(Number(seconds)||0)),h=Math.floor(total/3600),m=Math.floor(total%3600/60),s=total%60;if(h)return `${h}小时${m?`${m}分`:''}${s?`${s}秒`:''}`;if(m)return `${m}分${s?`${s}秒`:''}`;return `${s}秒`;}
   function quotaCell(a){const q=a.quota||{};const rem=q.remaining_seconds??0,used=q.consumed_seconds??0,lim=q.daily_limit_seconds??30,res=q.reserved_seconds??0;return `<div class="quota-cell"><div class="quota-remaining"><span>剩余</span><strong>${rem}s</strong><small>/ ${lim}s</small></div><div class="cell-sub">已用 ${used}s${res?` · 排队 ${res}s`:''}</div></div>`;}
   let toastTimer;
-  function toast(message,isError=false){const el=$('toast');el.textContent=message;el.classList.toggle('error',isError);el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),3600);}
-  async function api(url, options={}){const opts={...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(options.headers||{})}};const res=await fetch(url,opts);let data;try{data=await res.json()}catch{data={}}if(!res.ok)throw new Error(data.detail||`请求失败 (${res.status})`);return data;}
+  function toast(message,isError=false){const el=$('toast');el.textContent=message;el.classList.toggle('error',isError);el.setAttribute('role','status');el.setAttribute('aria-live',isError?'assertive':'polite');el.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('show'),3600);}
+  async function api(url, options={}){
+    const opts={...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(options.headers||{})}};
+    const feedback=beginButtonFeedback(pendingButtonInteraction);
+    try{
+      const res=await fetch(url,opts);
+      let data;try{data=await res.json()}catch{data={}}
+      if(!res.ok)throw new Error(data.detail||`请求失败 (${res.status})`);
+      endButtonFeedback(feedback,true);
+      return data;
+    }catch(error){
+      endButtonFeedback(feedback,false);
+      throw error;
+    }
+  }
   function switchView(name){state.activeView=name;document.querySelector('.page').classList.toggle('jobs-wide',name==='jobs');document.querySelectorAll('.view').forEach(v=>v.classList.add('hidden'));$('view-'+name).classList.remove('hidden');document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===name));$('crumbName').textContent=viewNames[name]||name;renderCurrent();}
   document.querySelectorAll('.nav-btn').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
   function openModal(id){if(id==='jobModal')fillAccountSelect();if(id==='webModal'){$('webAccount').innerHTML=accountOptions('');$('webSubmitModeHint').textContent=state.submitMode==='manual'?'当前设置：手动。任务创建后进入「待处理」，点「进入调度」后全程自动执行。':'当前设置：自动。任务创建后直接进入调度并自动执行。';syncWebMode();}if(id==='accountModal')prefillAccountName();$(id).classList.add('show');}
