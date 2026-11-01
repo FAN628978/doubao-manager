@@ -10,6 +10,7 @@
 真实 Chromium + 真实 app.js / index.html，后端接口用路由拦截提供数据。
 """
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -82,6 +83,17 @@ class Server:
         self.feedback_delay = 0
         self.feedback_error = False
         self.feedback_requests = 0
+        self.ignore_quota_check = False
+        self.ignore_quota_updates = []
+        self.accounts = [{
+            "id": "account_1", "name": "账号一", "note": "",
+            "is_member": False, "priority": 0, "paused": False,
+            "archived": False, "sequence": 1, "browser_open": False,
+            "quota": {
+                "remaining_seconds": 30, "consumed_seconds": 0,
+                "reserved_seconds": 0, "daily_limit_seconds": 30,
+            },
+        }]
 
     async def handle(self, route):
         url = route.request.url
@@ -114,15 +126,7 @@ class Server:
                                 body=_json(self.jobs))
         elif url.endswith("/api/accounts"):
             await route.fulfill(status=200, content_type="application/json",
-                                body=_json([{"id": "account_1", "name": "账号一",
-                                             "note": "", "is_member": False,
-                                             "priority": 0, "paused": False,
-                                             "archived": False, "sequence": 1,
-                                             "browser_open": False,
-                                             "quota": {"remaining_seconds": 30,
-                                                       "consumed_seconds": 0,
-                                                       "reserved_seconds": 0,
-                                                       "daily_limit_seconds": 30}}]))
+                                body=_json(self.accounts))
         elif url.endswith("/api/stats"):
             await route.fulfill(status=200, content_type="application/json",
                                 body=_json({"accounts_total": 1, "pending": 0,
@@ -137,6 +141,16 @@ class Server:
         elif url.endswith("/api/settings/processing-limit"):
             await route.fulfill(status=200, content_type="application/json",
                                 body=_json({"processing_limit": 3}))
+        elif url.endswith("/api/settings/ignore-quota-check"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.ignore_quota_check = bool(body.get("ignore_quota_check"))
+                self.ignore_quota_updates.append(self.ignore_quota_check)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json({"ignore_quota_check": self.ignore_quota_check}),
+            )
         else:
             await route.fulfill(status=200, content_type="application/json", body="{}")
 
@@ -791,6 +805,74 @@ def test_mobile_buttons_do_not_clip_labels():
                         .map(button => button.textContent.trim())"""
                 )
                 assert clipped == [], clipped
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_global_quota_override_is_saved_from_task_settings():
+    async def run():
+        server = Server()
+        server.accounts = [
+            {
+                "id": "account_low", "name": "low", "note": "",
+                "is_member": False, "priority": 100, "paused": False,
+                "archived": False, "sequence": 1, "browser_open": False,
+                "quota": {"remaining_seconds": 0},
+            },
+            {
+                "id": "account_max", "name": "max", "note": "",
+                "is_member": False, "priority": 0, "paused": False,
+                "archived": False, "sequence": 2, "browser_open": False,
+                "quota": {"remaining_seconds": 12},
+            },
+            {
+                "id": "account_paused", "name": "paused", "note": "",
+                "is_member": False, "priority": 0, "paused": True,
+                "archived": False, "sequence": 3, "browser_open": False,
+                "quota": {"remaining_seconds": 30},
+            },
+            {
+                "id": "account_busy", "name": "busy", "note": "",
+                "is_member": False, "priority": 0, "paused": False,
+                "archived": False, "sequence": 4, "browser_open": True,
+                "quota": {"remaining_seconds": 30},
+            },
+        ]
+        server.jobs = [
+            _job("busy_job", status="generating", account_id="account_busy")
+        ]
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => openSubmitModeSettings()")
+                assert await page.get_attribute(
+                    "#ignoreQuotaSettingBtn", "aria-pressed"
+                ) == "false"
+                await page.click("#ignoreQuotaSettingBtn")
+                assert await page.evaluate("() => state.settingIgnoreQuota") is True
+                assert await page.get_attribute(
+                    "#ignoreQuotaSettingBtn", "aria-pressed"
+                ) == "true"
+                assert "已解除额度判断" in await page.inner_text(
+                    "#ignoreQuotaSettingBtn"
+                )
+                await page.evaluate("() => $('submitModeForm').requestSubmit()")
+                await page.wait_for_function(
+                    "() => !document.getElementById('submitModeModal').classList.contains('show')"
+                )
+                assert server.ignore_quota_updates == [True]
+                assert await page.evaluate("() => state.ignoreQuotaCheck") is True
+                await page.evaluate("() => openModal('webModal')")
+                assert await page.input_value("#webAccount") == "account_max"
+                await page.evaluate("() => closeModal('webModal')")
+
+                await page.evaluate("() => openSubmitModeSettings()")
+                assert await page.get_attribute(
+                    "#ignoreQuotaSettingBtn", "aria-pressed"
+                ) == "true"
             finally:
                 await browser.close()
 

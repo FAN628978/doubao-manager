@@ -65,6 +65,10 @@ class ProcessingLimitSetting(BaseModel):
     processing_limit: int = Field(ge=0)
 
 
+class IgnoreQuotaSetting(BaseModel):
+    ignore_quota_check: bool
+
+
 class ConfirmationSendRequest(BaseModel):
     preset_id: str = Field(min_length=1, max_length=80)
 

@@ -1,4 +1,6 @@
 ﻿const state = { accounts: [], jobs: [], stats: {}, submitMode: 'manual', processingLimit: 0, jobSection: 'processing', jobSubgroup: '', selectedJobIds: new Set(), lastJobCheckIndex: -1, bulkJobAction: null, bulkProgress: null, confirmationPresets: [], confirmJobId: null, confirmJobIds: [], confirmPresetReturn: false, editingPresetId: null, uploadJobId: null, activeView: 'overview' };
+  state.ignoreQuotaCheck=false;
+  state.settingIgnoreQuota=false;
   const viewNames = {overview:'工作概览',accounts:'账号管理',jobs:'分镜任务',integration:'API 接入'};
   const statusLabels = {queued:['排队中','yellow'],ready:['待人工提交','blue'],opening:['打开页面','blue'],configuring:['配置参数','blue'],uploading:['上传素材','blue'],downloading:['下载视频','blue'],submitting:['提交中','blue'],confirming:['发送确认语','blue'],generating:['生成中','blue'],awaiting_manual_send:['待人工发送','yellow'],needs_review:['需人工处理','red'],downloaded:['已归档','green'],failed:['失败','red']};
   const $ = (id) => document.getElementById(id);
@@ -145,11 +147,12 @@
   }
   function switchView(name){state.activeView=name;document.querySelector('.page').classList.toggle('jobs-wide',name==='jobs');document.querySelectorAll('.view').forEach(v=>v.classList.add('hidden'));$('view-'+name).classList.remove('hidden');document.querySelectorAll('.nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===name));$('crumbName').textContent=viewNames[name]||name;renderCurrent();}
   document.querySelectorAll('.nav-btn').forEach(b=>b.addEventListener('click',()=>switchView(b.dataset.view)));
-  function openModal(id){if(id==='jobModal')fillAccountSelect();if(id==='webModal'){$('webAccount').innerHTML=accountOptions('');$('webSubmitModeHint').textContent=state.submitMode==='manual'?'当前设置：手动。任务创建后进入「待处理」，点「进入调度」后全程自动执行。':'当前设置：自动。任务创建后直接进入调度并自动执行。';syncWebMode();}if(id==='accountModal')prefillAccountName();$(id).classList.add('show');}
+  function maxRemainingAccountId(){const accounts=state.accounts.filter(a=>!a.paused&&!a.archived),busyStatuses=new Set(['queued','ready','opening','configuring','uploading','submitting','generating','confirming','downloading','awaiting_manual_send','needs_review']),busy=new Set(state.jobs.filter(j=>j.account_id&&busyStatuses.has(j.status)).map(j=>j.account_id)),idle=accounts.filter(a=>!busy.has(a.id)),pool=idle.length?idle:accounts;return pool.reduce((best,a)=>(Number(a.quota?.remaining_seconds)||0)>(Number(best?.quota?.remaining_seconds)||-1)?a:best,null)?.id||'';}
+  function openModal(id){if(id==='jobModal')fillAccountSelect();if(id==='webModal'){$('webAccount').innerHTML=accountOptions(state.ignoreQuotaCheck?maxRemainingAccountId():'');$('webSubmitModeHint').textContent=state.submitMode==='manual'?'当前设置：手动。任务创建后进入「待处理」，点「进入调度」后全程自动执行。':'当前设置：自动。任务创建后直接进入调度并自动执行。';syncWebMode();}if(id==='accountModal')prefillAccountName();$(id).classList.add('show');}
   function closeModal(id){$(id).classList.remove('show');}
   document.querySelectorAll('.modal-backdrop').forEach(el=>el.addEventListener('click',e=>{if(e.target===el){if(el.id==='confirmationPresetsModal')closeConfirmationPresets();else el.classList.remove('show')}}));
   let refreshing=null;
-  async function loadState(){const [accounts,jobs,stats,settings,limitSettings]=await Promise.all([api('/api/accounts'),api('/api/jobs'),api('/api/stats'),api('/api/settings/video-submit-mode'),api('/api/settings/processing-limit')]);state.accounts=accounts;state.jobs=jobs;state.stats=stats;state.submitMode=settings.submit_mode||'auto';state.processingLimit=Number(limitSettings.processing_limit)||0;const existing=new Set(jobs.map(j=>j.id));state.selectedJobIds=new Set([...state.selectedJobIds].filter(id=>existing.has(id)));}
+  async function loadState(){const [accounts,jobs,stats,settings,limitSettings,quotaSettings]=await Promise.all([api('/api/accounts'),api('/api/jobs'),api('/api/stats'),api('/api/settings/video-submit-mode'),api('/api/settings/processing-limit'),api('/api/settings/ignore-quota-check')]);state.accounts=accounts;state.jobs=jobs;state.stats=stats;state.submitMode=settings.submit_mode||'auto';state.processingLimit=Number(limitSettings.processing_limit)||0;state.ignoreQuotaCheck=Boolean(quotaSettings.ignore_quota_check);const existing=new Set(jobs.map(j=>j.id));state.selectedJobIds=new Set([...state.selectedJobIds].filter(id=>existing.has(id)));}
   // 定时刷新与手动刷新共用一次请求：上一次没结束就复用它，避免定时器把请求越堆越多。
   // 静默刷新失败时不再完全吞掉：页面顶部给出提示，恢复后自动消失，避免界面停在旧数据上。
   function setRefreshStatus(failed,message){
@@ -185,8 +188,17 @@
     if(video&&!video.paused)return true;
     return false;
   }
-  function openSubmitModeSettings(){$('submitModeSetting').value=state.submitMode;$('processingLimitSetting').value=String(state.processingLimit);openModal('submitModeModal')}
-  $('submitModeForm').addEventListener('submit',async e=>{e.preventDefault();const mode=$('submitModeSetting').value,limit=Math.max(0,Math.trunc(Number($('processingLimitSetting').value)||0));try{const [modeResult,limitResult]=await Promise.all([api('/api/settings/video-submit-mode',{method:'PUT',body:JSON.stringify({submit_mode:mode})}),api('/api/settings/processing-limit',{method:'PUT',body:JSON.stringify({processing_limit:limit})})]);state.submitMode=modeResult.submit_mode;state.processingLimit=limitResult.processing_limit;closeModal('submitModeModal');toast(`设置已保存：${state.submitMode==='auto'?'自动执行':'人工处理'}，${state.processingLimit?`正在处理队列上限 ${state.processingLimit} 个任务`:'正在处理队列数量不限'}`)}catch(err){toast(err.message,true)}});
+  function renderIgnoreQuotaSettingButton(){
+    const button=$('ignoreQuotaSettingBtn');
+    if(!button)return;
+    const active=state.settingIgnoreQuota;
+    button.classList.toggle('primary',active);
+    button.setAttribute('aria-pressed',String(active));
+    button.textContent=active?'已解除额度判断 · 自动选最大剩余':'解除额度判断 · 自动选最大剩余';
+  }
+  function toggleIgnoreQuotaSetting(){state.settingIgnoreQuota=!state.settingIgnoreQuota;renderIgnoreQuotaSettingButton()}
+  function openSubmitModeSettings(){state.settingIgnoreQuota=state.ignoreQuotaCheck;$('submitModeSetting').value=state.submitMode;$('processingLimitSetting').value=String(state.processingLimit);renderIgnoreQuotaSettingButton();openModal('submitModeModal')}
+  $('submitModeForm').addEventListener('submit',async e=>{e.preventDefault();const mode=$('submitModeSetting').value,limit=Math.max(0,Math.trunc(Number($('processingLimitSetting').value)||0)),ignoreQuota=Boolean(state.settingIgnoreQuota);try{const [modeResult,limitResult,quotaResult]=await Promise.all([api('/api/settings/video-submit-mode',{method:'PUT',body:JSON.stringify({submit_mode:mode})}),api('/api/settings/processing-limit',{method:'PUT',body:JSON.stringify({processing_limit:limit})}),api('/api/settings/ignore-quota-check',{method:'PUT',body:JSON.stringify({ignore_quota_check:ignoreQuota})})]);state.submitMode=modeResult.submit_mode;state.processingLimit=limitResult.processing_limit;state.ignoreQuotaCheck=quotaResult.ignore_quota_check;closeModal('submitModeModal');toast(`设置已保存：${state.submitMode==='auto'?'自动执行':'人工处理'}，${state.processingLimit?`正在处理队列上限 ${state.processingLimit} 个任务`:'正在处理队列数量不限'}${state.ignoreQuotaCheck?'；已解除剩余额度判断并优先选择最大剩余额度':''}`)}catch(err){toast(err.message,true)}});
   function renderCurrent(options={}){renderOverview();renderAccounts();renderJobs(options);}
   function jobAccountOrder(accountId){const account=state.accounts.find(item=>item.id===accountId);return account&&Number(account.sequence)?String(Number(account.sequence)).padStart(2,'0'):'—';}
   function renderOverview(){const jobs=state.jobs.slice(0,5);$('overviewJobs').innerHTML=jobs.length?`<div class="mini-list">${jobs.map(j=>{const label=[j.project_id,j.episode_id,j.shot_id].filter(Boolean).join(' / ')||j.id;return `<div class="mini-row"><div class="avatar">${esc(jobAccountOrder(j.account_id))}</div><div class="mini-info"><strong>${esc(label)}</strong><span>${esc((j.prompt||'').slice(0,65))}${(j.prompt||'').length>65?'…':''}</span></div>${statusPill(j.status)}</div>`}).join('')}</div>`:`<div class="empty"><div class="empty-icon">▤</div>还没有任务。创建一个分镜任务开始使用。</div>`;}

@@ -115,3 +115,112 @@ def test_pending_job_cannot_be_forced_onto_an_account_at_creation(tmp_path, monk
         job = created.json()
         assert job["account_id"] == account["id"]
         assert job["web"]["quota_state"] == "reserved"
+
+
+def test_global_quota_override_is_persisted_and_reserves_overage(tmp_path, monkeypatch):
+    monkeypatch.setattr(application, "DB_PATH", tmp_path / "quota-override.sqlite3")
+
+    with TestClient(application.app) as client:
+        account = client.post(
+            "/api/accounts", json={"name": "额度已用完", "priority": 0}
+        ).json()
+        with application.db() as conn:
+            conn.execute(
+                "INSERT INTO account_quota"
+                "(account_id, day, reserved_seconds, consumed_seconds) "
+                "VALUES(?, ?, 0, 30)",
+                (account["id"], _day()),
+            )
+
+        payload = {
+            "account_id": account["id"],
+            "prompt": "明确解除额度判断",
+            "duration": 4,
+            "auto_start": False,
+        }
+        rejected = client.post("/api/v1/videos/generations", json=payload)
+        assert rejected.status_code == 409, rejected.text
+
+        updated = client.put(
+            "/api/settings/ignore-quota-check",
+            json={"ignore_quota_check": True},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json() == {"ignore_quota_check": True}
+        assert client.get("/api/settings/ignore-quota-check").json() == {
+            "ignore_quota_check": True
+        }
+
+        forced = client.post("/api/v1/videos/generations", json=payload)
+        assert forced.status_code == 202, forced.text
+        job = forced.json()
+        assert job["account_id"] == account["id"]
+        assert job["web"]["quota_state"] == "reserved"
+        assert "ignore_quota" not in job["web"]
+
+        with application.db() as conn:
+            quota = conn.execute(
+                "SELECT reserved_seconds, consumed_seconds FROM account_quota "
+                "WHERE account_id=? AND day=?",
+                (account["id"], _day()),
+            ).fetchone()
+        assert quota["reserved_seconds"] == 4
+        assert quota["consumed_seconds"] == 30
+
+
+def test_global_quota_override_auto_dispatch_uses_largest_remainder(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(application, "DB_PATH", tmp_path / "auto-quota-override.sqlite3")
+
+    with TestClient(application.app) as client:
+        low = client.post(
+            "/api/accounts", json={"name": "零额度", "priority": 100}
+        ).json()
+        high = client.post(
+            "/api/accounts", json={"name": "较高额度", "priority": 0}
+        ).json()
+        with application.db() as conn:
+            conn.executemany(
+                "INSERT INTO account_quota"
+                "(account_id, day, reserved_seconds, consumed_seconds) "
+                "VALUES(?, ?, 0, ?)",
+                (
+                    (low["id"], _day(), 30),
+                    (high["id"], _day(), 27),
+                ),
+            )
+
+        updated = client.put(
+            "/api/settings/ignore-quota-check",
+            json={"ignore_quota_check": True},
+        )
+        assert updated.status_code == 200, updated.text
+
+        created = client.post(
+            "/api/v1/videos/generations",
+            json={
+                "prompt": "额度不足时自动挑选剩余最多的账号",
+                "duration": 4,
+                "auto_start": False,
+            },
+        )
+        assert created.status_code == 202, created.text
+        job_id = created.json()["id"]
+        started = client.post(f"/api/v1/videos/generations/{job_id}/start")
+        assert started.status_code == 200, started.text
+
+        deadline = time.time() + 10
+        state = {}
+        while time.time() < deadline:
+            state = client.get(f"/api/v1/videos/generations/{job_id}").json()
+            if state["account_id"]:
+                break
+            time.sleep(0.01)
+
+        assert state["account_id"] == high["id"], state
+        assert state["web"]["quota_state"] == "reserved", state
+
+        task = application.app.state.video_pending.pop(job_id, None)
+        if task is not None:
+            task.cancel()

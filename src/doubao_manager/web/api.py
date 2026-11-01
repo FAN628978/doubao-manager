@@ -42,6 +42,7 @@ from .config import (
 from .models import (
     ConfirmationPresetInput,
     ConfirmationSendRequest,
+    IgnoreQuotaSetting,
     ProcessingLimitSetting,
     QueueAccountRequest,
     ReviewNeeded,
@@ -364,6 +365,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         value = (row["value"] if row else "manual").strip().lower()
         return value if value in ("auto", "manual") else "manual"
 
+    def local_ignore_quota_check() -> bool:
+        with db() as c:
+            row = c.execute(
+                "SELECT value FROM local_settings WHERE key='ignore_quota_check'"
+            ).fetchone()
+        return bool(row) and str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
+
     @app.get("/api/settings/video-submit-mode", tags=["Local Settings"])
     async def get_video_submit_mode():
         ensure_schema()
@@ -401,6 +409,22 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         sync_processing_job_ids()
         return {"processing_limit": payload.processing_limit,
                 "active_processing": active_processing}
+
+    @app.get("/api/settings/ignore-quota-check", tags=["Local Settings"])
+    async def get_ignore_quota_check():
+        ensure_schema()
+        return {"ignore_quota_check": local_ignore_quota_check()}
+
+    @app.put("/api/settings/ignore-quota-check", tags=["Local Settings"])
+    async def update_ignore_quota_check(payload: IgnoreQuotaSetting):
+        ensure_schema()
+        with db() as c:
+            c.execute(
+                "INSERT INTO local_settings(key,value) VALUES('ignore_quota_check',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("1" if payload.ignore_quota_check else "0",),
+            )
+        return {"ignore_quota_check": payload.ignore_quota_check}
 
     def fingerprint(req):
         # Display naming is metadata, not generation input; changing it must not break
@@ -658,7 +682,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             previous_day = w["quota_day"] or ""
             state = w["quota_state"] or ""
             remaining = quota["remaining_seconds"]
-            if duration > remaining:
+            if duration > remaining and not local_ignore_quota_check():
                 raise HTTPException(
                     409, f"账号当日剩余额度不足（需 {duration} 秒，剩余 {remaining} 秒）"
                 )
@@ -1106,7 +1130,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         Best-fit allocation reduces stranded seconds on accounts whose remaining
         quota is only slightly larger than the task duration. Avoided retry accounts
         stay last; idleness and configured priority break equal-fit ties.
+        When the global quota override is enabled, prefer the greatest remainder.
         """
+        ignore_quota = local_ignore_quota_check()
         with db() as c:
             rows = c.execute("SELECT * FROM accounts WHERE archived=0 ORDER BY created_at ASC").fetchall()
         active_rows = [row for row in rows if not bool(account_value(row, "paused", 0))]
@@ -1124,7 +1150,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             for r in active_rows:
                 quota = quota_summary(c, r["id"])
                 remaining = quota["remaining_seconds"]
-                if remaining >= required_seconds:
+                if ignore_quota or remaining >= required_seconds:
                     candidates.append((r["id"], r["created_at"], remaining,
                                        int(account_value(r, "priority", 0) or 0)))
         if candidates:
@@ -1133,14 +1159,23 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             # it solely because its leftover quota fits better makes the queue look
             # frozen while other accounts sit idle. Busy accounts stay selectable as a
             # last resort (all candidates busy) and are then waited on explicitly.
-            candidates.sort(key=lambda item: (
-                item[0] == avoid_account_id,
-                item[0] in busy,
-                item[2] - required_seconds,
-                -item[3],
-                item[2],
-                item[1],
-            ))
+            if ignore_quota:
+                candidates.sort(key=lambda item: (
+                    item[0] == avoid_account_id,
+                    item[0] in busy,
+                    -item[2],
+                    -item[3],
+                    item[1],
+                ))
+            else:
+                candidates.sort(key=lambda item: (
+                    item[0] == avoid_account_id,
+                    item[0] in busy,
+                    item[2] - required_seconds,
+                    -item[3],
+                    item[2],
+                    item[1],
+                ))
             return candidates[0][0]
         raise HTTPException(409, f"所有账号当日视频额度不足（本次需 {required_seconds} 秒，每日上限 {DAILY_VIDEO_SECONDS} 秒）")
 
@@ -1380,7 +1415,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         payload = req.model_dump(include={"first_frame_asset_id", "last_frame_asset_id", "reference_asset_ids"}, exclude_none=True)
         try:
             with db() as c:
-                if req.account_id:
+                if req.account_id and not local_ignore_quota_check():
                     remaining = quota_summary(c, req.account_id)["remaining_seconds"]
                     if req.duration > remaining:
                         raise HTTPException(
@@ -1591,7 +1626,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                         (dur, req.account_id, w["quota_day"]),
                     )
                 remaining = quota_summary(c, req.account_id)["remaining_seconds"]
-                if dur > remaining:
+                if dur > remaining and not local_ignore_quota_check():
                     raise HTTPException(409,f"账号当日剩余额度不足（需 {dur} 秒，剩余 {remaining} 秒）")
                 reserve_quota(c, req.account_id, dur, day)
                 c.execute("UPDATE video_web_jobs SET quota_day=?, quota_state='reserved' WHERE job_id=?",
@@ -1767,7 +1802,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                       (jobid,req.ratio,req.duration,req.mode,"{}","",submit_mode))
             if req.account_id:
                 remaining = quota_summary(c, req.account_id)["remaining_seconds"]
-                if req.duration > remaining:
+                if req.duration > remaining and not local_ignore_quota_check():
                     raise HTTPException(
                         409, f"账号当日剩余额度不足（需 {req.duration} 秒，剩余 {remaining} 秒）"
                     )
@@ -2297,7 +2332,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             if w and needs_reservation:
                 dur = int(w["duration"] or 0)
                 remaining = quota_summary(c, account_id)["remaining_seconds"]
-                if dur > remaining:
+                if dur > remaining and not local_ignore_quota_check():
                     raise HTTPException(409, f"账号当日剩余额度不足（需 {dur} 秒，剩余 {remaining} 秒）")
         page = None
         created_page = False
