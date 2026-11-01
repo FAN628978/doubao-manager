@@ -136,6 +136,28 @@ def poll_interval(started_at: float | None = None) -> float:
     return 8.0
 
 
+CONFIRMATION_RESULT_POLL_DELAYS = (120.0, 60.0, 30.0, 15.0, 10.0)
+
+
+def confirmation_result_poll_interval(probe_index: int) -> float:
+    """Delay before each result probe after the confirmation answer was sent.
+
+    The first probe waits 120 seconds, followed by 60/30/15/10-second gaps and
+    then a steady 10-second cadence. DOUBAO_POLL_SECONDS remains the test and
+    operational override shared with the rest of the automation flow.
+    """
+    override = os.getenv("DOUBAO_POLL_SECONDS")
+    if override is not None:
+        try:
+            return max(0.0, float(override))
+        except ValueError:
+            pass
+    index = max(0, int(probe_index))
+    return CONFIRMATION_RESULT_POLL_DELAYS[
+        min(index, len(CONFIRMATION_RESULT_POLL_DELAYS) - 1)
+    ]
+
+
 async def adaptive_poll(page=None, started_at: float | None = None) -> float:
     seconds = poll_interval(started_at)
     if page is not None and hasattr(page, "wait_for_timeout"):

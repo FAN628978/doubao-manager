@@ -45,7 +45,15 @@ from .config import (
     WORK_HOME_TEXT,
 )
 from .models import ReviewNeeded, VideoRequest
-from .utils import adaptive_poll, automatic_step_delay, concise_job_title, safe, set_job_page_title, ts
+from .utils import (
+    adaptive_poll,
+    automatic_step_delay,
+    concise_job_title,
+    confirmation_result_poll_interval,
+    safe,
+    set_job_page_title,
+    ts,
+)
 
 def is_safe_media(u: str) -> bool:
     p = urlparse(u)
@@ -969,6 +977,7 @@ async def wait_for_result(page, initial, target, on_status, confirmation_text: s
     started_at = asyncio.get_running_loop().time()
     deadline = started_at + timeout_seconds
     stable, confirmation_answered = 0, False
+    confirmation_probe_index = 0
     while asyncio.get_running_loop().time() < deadline:
         s = await read_state(page)
         t = s["text"]
@@ -993,6 +1002,10 @@ async def wait_for_result(page, initial, target, on_status, confirmation_text: s
             if verdict == "not_sent":
                 raise ReviewNeeded("CONFIRM_NOT_SENT", "确认生成的消息没有发出去；未消耗额度，需人工核对页面")
             await on_status("generating", f"确认语已发送，等待豆包生成（将消耗额度）：{how}")
+            await page.wait_for_timeout(
+                confirmation_result_poll_interval(confirmation_probe_index) * 1000
+            )
+            confirmation_probe_index += 1
             continue
         # Never attribute an older card to this generation: only a card count above the
         # pre-submit baseline, seen stable across two polls, counts as this job's result.
@@ -1007,7 +1020,13 @@ async def wait_for_result(page, initial, target, on_status, confirmation_text: s
                                                  card_index=baseline_cards, on_ready=ready)
             return {"video_url": result["video_url"], "web_page_url": s["url"],
                     "output": result["output"]}
-        await adaptive_poll(page, started_at)
+        if confirmation_answered:
+            await page.wait_for_timeout(
+                confirmation_result_poll_interval(confirmation_probe_index) * 1000
+            )
+            confirmation_probe_index += 1
+        else:
+            await adaptive_poll(page, started_at)
     raise ReviewNeeded("WAIT_TIMEOUT", "生成等待超时，不能认定为失败或自动重新提交")
 
 

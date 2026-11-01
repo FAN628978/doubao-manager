@@ -20,6 +20,11 @@ from playwright.async_api import async_playwright, Page, APIRequestContext
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import web_api
 from web_api import CONFIRM_ANSWER, ReviewNeeded, VideoRequest, perform, persisted_url
+from doubao_manager.web import automation
+from doubao_manager.web.utils import (
+    CONFIRMATION_RESULT_POLL_DELAYS,
+    confirmation_result_poll_interval,
+)
 
 VIDEO_URL = "https://v26-vdl.doubao.com/abc123/video/tos/cn/mock.mp4?mime_type=video_mp4&lr=video_gen_watermark_dyn"
 CLEAN_URL = "https://v26-vdl.doubao.com/abc123/video/tos/cn/mock.mp4?mime_type=video_mp4&lr=unwatermarked"
@@ -324,3 +329,64 @@ def test_persisted_url_waits_past_generic_and_local_routes(monkeypatch):
 
     # Off-site fixtures must never be delayed by the Doubao URL heuristic.
     assert asyncio.run(persisted_url(FakePage(), 'http://localhost:8001/test')) == 'http://localhost:8001/test'
+
+
+def test_confirmation_result_poll_schedule(monkeypatch):
+    monkeypatch.delenv("DOUBAO_POLL_SECONDS", raising=False)
+    delays = [confirmation_result_poll_interval(index) for index in range(8)]
+    assert delays == [120.0, 60.0, 30.0, 15.0, 10.0, 10.0, 10.0, 10.0]
+    assert CONFIRMATION_RESULT_POLL_DELAYS == (120.0, 60.0, 30.0, 15.0, 10.0)
+
+
+def test_result_probes_start_after_confirmation_schedule(monkeypatch):
+    monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
+    monkeypatch.delenv("DOUBAO_POLL_SECONDS", raising=False)
+    waits = []
+
+    class FakePage:
+        async def wait_for_timeout(self, milliseconds):
+            waits.append(milliseconds)
+
+    states = [
+        {"text": "", "failed": False, "awaitingConfirm": True,
+         "videoCards": 0, "runningLast": False, "url": "https://www.doubao.com/chat/1"},
+        {"text": "", "failed": False, "awaitingConfirm": False,
+         "videoCards": 0, "runningLast": False, "url": "https://www.doubao.com/chat/1"},
+        {"text": "", "failed": False, "awaitingConfirm": False,
+         "videoCards": 1, "runningLast": False, "url": "https://www.doubao.com/chat/1"},
+        {"text": "", "failed": False, "awaitingConfirm": False,
+         "videoCards": 1, "runningLast": False, "url": "https://www.doubao.com/chat/1"},
+    ]
+
+    async def fake_read_state(_page):
+        return states.pop(0)
+
+    async def fake_dismiss(_page):
+        return False
+
+    async def fake_confirm(_page, _text):
+        return "composer:test"
+
+    async def fake_confirm_wait(_page, _state, _baseline, _timeout):
+        return "sent", states[0]
+
+    async def fake_download(_page, _known_urls, _target, **_kwargs):
+        return {"video_url": "https://www.doubao.com/result.mp4",
+                "output": "/tmp/result.mp4"}
+
+    async def no_status(_state, _message):
+        return None
+
+    monkeypatch.setattr(automation, "read_state", fake_read_state)
+    monkeypatch.setattr(automation, "dismiss_blocking_dialogs", fake_dismiss)
+    monkeypatch.setattr(automation, "confirm_pending_generation", fake_confirm)
+    monkeypatch.setattr(automation, "wait_confirm_send", fake_confirm_wait)
+    monkeypatch.setattr(automation, "download_result_video", fake_download)
+
+    initial = {"videoCards": 0, "videoUrls": [], "videoUrl": None}
+    result = asyncio.run(automation.wait_for_result(
+        FakePage(), initial, Path("result.mp4"), no_status, "confirm"
+    ))
+
+    assert result["video_url"] == "https://www.doubao.com/result.mp4"
+    assert waits == [120000, 60000, 30000]
