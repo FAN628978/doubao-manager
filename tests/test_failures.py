@@ -919,6 +919,8 @@ def test_download_result_archives_bound_video_without_duration_gate(tmp_path, mo
     with application.db() as c:
         c.execute("INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
                   ('acc_pull', 'pull', '', str(tmp_path / 'profile'), '2026-10-28T00:00:00+00:00'))
+        c.execute("INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+                  ('acc_busy', 'busy', '', str(tmp_path / 'busy-profile'), '2026-10-28T00:00:01+00:00'))
         c.execute("INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)"
                   " VALUES(?,?,?,?,?,?,?,?,?)",
                   ('job_pull', 'p', 'e', 's', 'prompt', 'acc_pull', 'needs_review',
@@ -927,7 +929,7 @@ def test_download_result_archives_bound_video_without_duration_gate(tmp_path, mo
                   ('job_pull', '16:9', 4, target_page))
         c.execute("INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)"
                   " VALUES(?,?,?,?,?,?,?,?,?)",
-                  ('job_busy', 'p', 'e', 'busy', 'prompt', 'acc_pull', 'opening',
+                  ('job_busy', 'p', 'e', 'busy', 'prompt', 'acc_busy', 'opening',
                    '2026-10-28T00:00:00+00:00', '2026-10-28T00:00:00+00:00'))
         c.execute("INSERT INTO video_web_jobs(job_id,ratio,duration) VALUES(?,?,?)",
                   ('job_busy', '16:9', 4))

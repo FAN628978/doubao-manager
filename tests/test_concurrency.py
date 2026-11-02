@@ -842,8 +842,8 @@ def test_auto_select_prefers_idle_account_over_best_fit_busy_account(tmp_path, m
 
     asyncio.run(asyncio.wait_for(run(), timeout=5))
 
-def test_needs_review_releases_the_account_for_the_next_job(tmp_path, monkeypatch):
-    """异常任务不能永久占着账号锁：它结束后同账号的下一个任务必须能跑。"""
+def test_needs_review_keeps_account_until_operator_resolves_it(tmp_path, monkeypatch):
+    """异常待人工仍占用账号；明确结束后同账号的下一任务才能运行。"""
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
     monkeypatch.setenv("DOUBAO_MAX_CONCURRENT_ACCOUNTS", "0")
     monkeypatch.setenv("DOUBAO_BROWSER_IDLE_CLOSE_SECONDS", "3600")
@@ -904,6 +904,18 @@ def test_needs_review_releases_the_account_for_the_next_job(tmp_path, monkeypatc
                 "account_id": "account_1", "prompt": "second", "duration": 4,
                 "submit_mode": "auto", "auto_start": True,
             })).json()
+            await asyncio.sleep(0.1)
+            second_state = (await client.get(
+                f"/api/v1/videos/generations/{second['id']}"
+            )).json()
+            assert second_state["status"] == "queued"
+            assert not second_started.is_set()
+
+            # 操作者重置异常任务后才释放旧占用，等待任务随后自动继续。
+            reset = await client.post(
+                f"/api/v1/videos/generations/{first['id']}/reset?confirm_reset=true"
+            )
+            assert reset.status_code == 200, reset.text
             await asyncio.wait_for(second_started.wait(), timeout=2)
             for _ in range(200):
                 state = (await client.get(
@@ -1047,11 +1059,22 @@ def test_stall_watchdog_interrupts_a_frozen_worker_and_releases_resources(tmp_pa
                 f"/api/v1/videos/generations/{created['id']}")).json()
             assert state["status"] == "needs_review"
 
-            # 被切断后账号必须已经释放，同账号的下一个任务能立刻开始。
-            await client.post("/api/v1/videos/generations", json={
+            # 异常待人工仍占用账号；下一个任务必须留在待处理。
+            next_job = (await client.post("/api/v1/videos/generations", json={
                 "account_id": "account_1", "prompt": "next", "duration": 4,
                 "submit_mode": "auto", "auto_start": True,
-            })
+            })).json()
+            await asyncio.sleep(0.1)
+            waiting = (await client.get(
+                f"/api/v1/videos/generations/{next_job['id']}"
+            )).json()
+            assert waiting["status"] == "queued"
+            assert not next_started.is_set()
+
+            reset = await client.post(
+                f"/api/v1/videos/generations/{created['id']}/reset?confirm_reset=true"
+            )
+            assert reset.status_code == 200, reset.text
             await asyncio.wait_for(next_started.wait(), timeout=2)
 
     asyncio.run(asyncio.wait_for(run(), timeout=8))

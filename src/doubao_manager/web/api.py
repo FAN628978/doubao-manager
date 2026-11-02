@@ -124,14 +124,30 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     processing_statuses = frozenset(ACTIVE)
     account_condition = asyncio.Condition()
     account_owners: dict[str, set[str]] = {}
+    account_holding_statuses = (*ACTIVE, MANUAL_WAIT, "needs_review")
     idle_close_tasks: dict[str, asyncio.Task] = {}
     app.state.video_idle_close_tasks = idle_close_tasks
+
+    def persisted_account_is_busy(account_id: str, ignore_jobid: str = "") -> bool:
+        """Return whether another non-terminal task still owns this account."""
+        if not account_id:
+            return False
+        with db() as c:
+            placeholders = ",".join("?" for _ in account_holding_statuses)
+            row = c.execute(
+                f"SELECT 1 FROM jobs WHERE account_id=? AND id!=? "
+                f"AND status IN ({placeholders}) LIMIT 1",
+                (account_id, ignore_jobid, *account_holding_statuses),
+            ).fetchone()
+        return row is not None
 
     def account_is_busy(account_id: str, ignore_jobid: str = "") -> bool:
         account_pending = getattr(recovery_service, "account_pending", None)
         if account_pending is not None and account_pending(account_id):
             return True
         if account_owners.get(account_id, set()) - {ignore_jobid}:
+            return True
+        if persisted_account_is_busy(account_id, ignore_jobid):
             return True
         for other_jobid, task in list(pending.items()):
             if other_jobid == ignore_jobid or task.done():
@@ -355,16 +371,11 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             active_processing = len(processing_job_ids)
             processing_condition.notify_all()
 
-    @asynccontextmanager
-    async def browser_slot(jobid: str):
+    async def acquire_processing_job(jobid: str) -> None:
+        """Wait until this job owns one global machine-processing slot."""
         nonlocal active_processing
         async with processing_condition:
-            # Reconcile stale in-memory IDs before enforcing the limit. This matters
-            # after an application restart and in long-lived hosts that switch DBs;
-            # otherwise three vanished jobs can occupy every slot forever.
             sync_processing_job_ids()
-            # Recover jobs left in a machine-owned phase by a previous process. The
-            # slot belongs to the task until it is archived/failed or handed to a human.
             processing_job_ids.update(persisted_processing_job_ids())
             if jobid not in processing_job_ids:
                 await processing_condition.wait_for(
@@ -373,6 +384,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 )
                 processing_job_ids.add(jobid)
             active_processing = len(processing_job_ids)
+
+    @asynccontextmanager
+    async def browser_slot(jobid: str):
+        nonlocal active_processing
+        # Reconcile stale in-memory IDs before enforcing the limit. This matters
+        # after an application restart and in long-lived hosts that switch DBs;
+        # otherwise three vanished jobs can occupy every slot forever.
+        await acquire_processing_job(jobid)
         try:
             yield
         finally:
@@ -400,8 +419,18 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         async with account_condition:
             await account_condition.wait_for(
                 lambda: not (account_owners.get(account_id, set()) - {jobid})
+                and not persisted_account_is_busy(account_id, jobid)
             )
             account_owners.setdefault(account_id, set()).add(jobid)
+
+    async def try_acquire_account_slot(jobid: str, account_id: str) -> bool:
+        """Claim an idle account without waiting while holding a processing slot."""
+        async with account_condition:
+            if (account_owners.get(account_id, set()) - {jobid}
+                    or persisted_account_is_busy(account_id, jobid)):
+                return False
+            account_owners.setdefault(account_id, set()).add(jobid)
+            return True
 
     async def acquire_account_slot_with_timeout(
         jobid: str, account_id: str
@@ -413,21 +442,19 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     async def release_account_slot(jobid: str, account_id: str) -> None:
         async with account_condition:
             owners = account_owners.get(account_id)
-            if not owners or jobid not in owners:
-                return
-            owners.discard(jobid)
-            if not owners:
-                account_owners.pop(account_id, None)
+            if owners and jobid in owners:
+                owners.discard(jobid)
+                if not owners:
+                    account_owners.pop(account_id, None)
             account_condition.notify_all()
 
     async def release_account_slot_if_finished(
         jobid: str, account_id: str
     ) -> None:
-        """Release the account lane as soon as the machine work ends.
+        """Release the lane only after the task no longer needs this account.
 
-        Ordinary ``needs_review`` hand-offs release the lane so the queue cannot
-        freeze. Manual-send and active takeover pages keep it because an operator
-        is still using that exact account until the task resumes or is released.
+        Manual-send, review, and takeover tasks remain visible in the processing
+        section and keep their exact browser/account binding until resolved.
         """
         with db() as c:
             row = c.execute(
@@ -436,7 +463,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 (jobid,),
             ).fetchone()
         if not row or (
-            row["status"] != MANUAL_WAIT and not bool(row["operator_takeover"])
+            row["status"] not in (MANUAL_WAIT, "needs_review")
+            and not bool(row["operator_takeover"])
         ):
             await release_account_slot(jobid, account_id)
 
@@ -1151,11 +1179,12 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                         "UPDATE video_web_jobs SET model=? WHERE job_id=?",
                         (req.model or "", jobid),
                     )
-                # 同一账号只允许一个任务执行；必须等前一个任务释放账号占用。
-                if not await acquire_account_slot_with_timeout(jobid, req.account_id):
-                    defer_job(jobid, "登记账号任务失败，后台自动重试")
+                # 同一账号只允许一个任务进入“正在处理”。如果账号正忙，先归还
+                # 全局处理名额，在待处理状态等账号；拿到账号后再重新申请处理名额。
+                if not await try_acquire_account_slot(jobid, req.account_id):
                     await release_processing_job(jobid)
-                    return
+                    await acquire_account_slot(jobid, req.account_id)
+                    await acquire_processing_job(jobid)
                 account_claimed = True
                 # Claim the persisted state last. If another action changed the job
                 # while we waited, back out without starting.
@@ -2139,6 +2168,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             c.execute("INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
                       (jobid,"queued",message,ts()))
         await release_processing_job(jobid)
+        if previous_account_id:
+            await release_account_slot(jobid, previous_account_id)
         old = prepared_pages.pop(jobid, None)
         if old is not None:
             try:
@@ -3266,6 +3297,11 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             item = detail(jobid)
+        if account_is_busy(account_id, ignore_jobid=jobid):
+            raise HTTPException(
+                409,
+                "该账号正在处理另一个任务；当前任务保留原状态，待账号空闲后再操作",
+            )
         token = claim_recall(jobid, preserve_downloaded=preserve_downloaded)
         if wait:
             await recall_worker(jobid, token, preserve_downloaded=preserve_downloaded)
