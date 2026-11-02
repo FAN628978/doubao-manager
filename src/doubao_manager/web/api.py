@@ -1934,31 +1934,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         last_event = events_out[-1] if events_out else {}
         next_task = next_pending_task(item["id"])
         takeover_active = bool(item["web"].get("operator_takeover"))
-        recovering = bool((item.get("recovery") or {}).get("active"))
-        running_task = pending.get(item["id"])
-        worker_active = running_task is not None and not running_task.done()
-        submission_uncertain = item["web"].get("error_code") == "SUBMISSION_UNCONFIRMED"
-        restartable = item["status"] in (
-            "queued", MANUAL_WAIT, "confirming", "generating", "needs_review", "failed"
-        )
-        restart_enabled = (
-            restartable and not takeover_active and not recovering
-            and not worker_active and not submission_uncertain
-        )
-        if submission_uncertain:
-            restart_reason = "提交结果未确认，必须先人工核验"
-        elif takeover_active:
-            restart_reason = "当前任务正由人工接管，请先恢复原任务流程"
-        elif recovering:
-            restart_reason = "Claude 正在处理该任务，请等待恢复结束"
-        elif worker_active:
-            restart_reason = "任务正在等待或执行，请勿重复启动"
-        elif item["status"] == "downloaded":
-            restart_reason = "任务已下载，不能原任务重新执行；如需再次生成请复制为新任务"
-        elif not restartable:
-            restart_reason = "当前状态不能重新自动执行"
-        else:
-            restart_reason = ""
         manual_controls = []
         if takeover_active:
             manual_controls.append({
@@ -1978,10 +1953,10 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             })
         manual_controls.extend([{
             "key": "restart_auto",
-            "label": "重新自动执行",
-            "enabled": restart_enabled,
-            "reason": restart_reason,
-            "confirm": "确认关闭原账号窗口后重新自动执行？系统会遵守原有额度和状态校验。",
+            "label": "换号自动执行",
+            "enabled": True,
+            "reason": "",
+            "confirm": "确认关闭原账号窗口后换号自动执行？系统会遵守原有额度和状态校验。",
         }, {
             "key": "next_task",
             "label": "下一个任务",

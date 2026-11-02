@@ -208,7 +208,7 @@ def test_extension_always_exposes_next_pending_control(tmp_path, monkeypatch):
         assert control["enabled"] is True
 
 
-def test_extension_always_exposes_restart_auto_control(tmp_path, monkeypatch):
+def test_extension_restart_auto_control_never_freezes(tmp_path, monkeypatch):
     bridge = build_bridge(tmp_path, monkeypatch)
     token = asyncio.run(bridge.state.video_bind_task_page("job_0", BoundPage()))
     with TestClient(bridge) as client:
@@ -219,8 +219,9 @@ def test_extension_always_exposes_restart_auto_control(tmp_path, monkeypatch):
             item for item in restartable["manual_controls"]
             if item["key"] == "restart_auto"
         )
-        assert control["label"] == "重新自动执行"
+        assert control["label"] == "换号自动执行"
         assert control["enabled"] is True
+        assert control["reason"] == ""
 
         with application.db() as connection:
             connection.execute("UPDATE jobs SET status='downloaded' WHERE id='job_0'")
@@ -231,8 +232,8 @@ def test_extension_always_exposes_restart_auto_control(tmp_path, monkeypatch):
             item for item in downloaded["manual_controls"]
             if item["key"] == "restart_auto"
         )
-        assert control["enabled"] is False
-        assert "已下载" in control["reason"]
+        assert control["enabled"] is True
+        assert control["reason"] == ""
 
 
 def test_takeover_and_resume_affect_only_bound_task(tmp_path, monkeypatch):
