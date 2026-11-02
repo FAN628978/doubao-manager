@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "豆包分镜任务面板",
+  "version": "1.0.0",
+  "description": "豆包管理工具的任务控制界面，所有操作仍由本地 Python 服务执行。",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://doubao.com/*", "https://www.doubao.com/*"],
+      "js": ["panel.js", "content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["panel.css"],
+      "matches": ["https://doubao.com/*", "https://www.doubao.com/*"]
+    }
+  ]
+}

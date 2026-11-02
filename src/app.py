@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from playwright.async_api import async_playwright, BrowserContext, Playwright
 
-from doubao_manager.chrome_runtime import resolve_project_chrome
+from doubao_manager.chrome_runtime import extension_launch_args, resolve_project_chrome
 
 from doubao_manager.windows_taskbar import (
     account_title_prefix,
@@ -535,7 +535,7 @@ async def open_account_browser(account_id: str) -> BrowserContext:
                 downloads_path=str(download_dir),
                 no_viewport=True,
                 locale="zh-CN",
-                args=["--start-maximized"],
+                args=["--start-maximized", *extension_launch_args(BASE_DIR)],
                 **browser_options,
             )
             title_script = account_title_script(sequence)

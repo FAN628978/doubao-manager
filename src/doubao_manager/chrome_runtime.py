@@ -82,6 +82,14 @@ def resolve_project_chrome(project_root: Path) -> Path | None:
     return None
 
 
+def extension_launch_args(project_root: Path) -> list[str]:
+    extension = Path(project_root).resolve() / "browser" / "extension"
+    if not (extension / "manifest.json").is_file():
+        return []
+    path = str(extension)
+    return [f"--disable-extensions-except={path}", f"--load-extension={path}"]
+
+
 def browser_version(executable: Path) -> str:
     if platform.system().lower() == "windows":
         try:
