@@ -19,6 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from playwright.async_api import async_playwright, BrowserContext, Playwright
 
+from doubao_manager.chrome_runtime import resolve_project_chrome
+
 from doubao_manager.windows_taskbar import (
     account_title_prefix,
     apply_account_taskbar_identity,
@@ -520,10 +522,12 @@ async def open_account_browser(account_id: str) -> BrowserContext:
         profile_dir.mkdir(parents=True, exist_ok=True)
         download_dir.mkdir(parents=True, exist_ok=True)
         try:
-            browser_options = {"channel": "chrome"}
-            portable_browser = BASE_DIR / "browser" / "chrome.exe"
-            if portable_browser.is_file():
-                browser_options = {"executable_path": str(portable_browser)}
+            project_browser = resolve_project_chrome(BASE_DIR)
+            browser_options = (
+                {"executable_path": str(project_browser)}
+                if project_browser is not None
+                else {"channel": "chrome"}
+            )
             context = await playwright_runtime.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
                 headless=False,

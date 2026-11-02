@@ -13,5 +13,7 @@ data/
 .tmp/
 build/
 dist/
+browser/chrome/
+browser/chrome.exe
 pytest-cache-files-*/
 *.spec

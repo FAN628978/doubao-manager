@@ -26,6 +26,13 @@ if errorlevel 1 (
 
 if not exist data mkdir data
 
+uv run --no-project --python ".venv\Scripts\python.exe" python scripts\install_chrome.py --if-missing
+if errorlevel 1 (
+  echo [ERROR] 项目专用 Chrome 安装失败，未启动服务。
+  pause
+  exit /b 1
+)
+
 rem 启动前释放被残留进程占用的 8765 端口（避免 WinError 10048）
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING"') do (
   echo 检测到残留进程 PID %%P 占用 8765 端口，正在结束...

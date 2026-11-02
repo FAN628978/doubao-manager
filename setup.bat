@@ -15,9 +15,9 @@ python -m pip install --upgrade pip
 if errorlevel 1 goto :fail
 python -m pip install -r requirements.txt
 if errorlevel 1 goto :fail
-python -m playwright install chrome
+python scripts\install_chrome.py
 if errorlevel 1 (
-  echo [WARN] Chrome 安装步骤未完成。请确认网络正常，或先安装 Google Chrome 后重试。
+  echo [WARN] 项目专用 Chrome 安装未完成。请检查网络后重新运行 setup.bat。
 )
 echo.
 echo [OK] 环境安装完成。双击 start.bat 启动。

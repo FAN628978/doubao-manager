@@ -39,10 +39,12 @@
 
 ## 安装与启动（Windows 10/11）
 
-要求：Python 3.10+、Chrome、可访问豆包的网络环境。运行 Chrome 需要有 Windows 桌面会话。
+要求：Python 3.10+、uv、可访问豆包的网络环境。运行 Chrome 需要有 Windows 桌面会话。
+
+项目使用独立的 Chrome for Testing，首次运行时自动安装到 `browser/chrome/`；该目录不会提交到 Git，也不会修改 Windows 系统 Chrome。可用 `uv run -- python scripts/install_chrome.py` 检查升级，用 `uv run -- python scripts/check_chrome.py` 执行独立临时 Profile 启动自检。现有账号始终使用 `data/profiles/{account_id}`，安装或升级浏览器不会删除、迁移或重建 Profile。
 
 1. 解压 ZIP 到固定位置，例如 `D:\DoubaoAccountDeskV3`，**不要覆盖 V2 文件夹**。
-2. 双击 `setup.bat`，安装 Python 依赖及 Playwright Chrome。
+2. 双击 `setup.bat`，安装 Python 依赖及项目专用 Chrome。
 3. 双击 `start.bat`，浏览器访问 `http://127.0.0.1:8765`。
 4. 进入“账号管理”创建账号档案（名称留空则自动按 `doubao01`、`doubao02`… 命名），点击“打开豆包”，在独立 Chrome 窗口中**自行完成登录**。Windows 任务栏图标会显示账号序号，每个账号窗口保持为独立按钮。误建的档案可用“删除”移除，登录资料会先移动到 `data/trash/`。
 5. 进入“分镜任务” → “多模式网页生成”，配置模式、比例、时长，按需上传图片并创建任务。
