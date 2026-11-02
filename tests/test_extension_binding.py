@@ -121,6 +121,8 @@ def test_explicit_tab_tokens_resolve_distinct_tasks(tmp_path, monkeypatch):
             "提交素材", "确认发送", "发送确认语", "下载视频", "推送服务器"
         ]
         assert [action["enabled"] for action in actions] == [True, True, True, True, False]
+        assert actions[3]["confirm"] == ""
+        assert actions[4]["confirm"] == ""
         generation = client.get("/api/v1/videos/generations/job_0").json()
         assert "extension_binding_token" not in generation["web"]
 

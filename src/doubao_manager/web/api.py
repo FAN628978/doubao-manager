@@ -1748,14 +1748,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "reason": busy_reason if blocked else (
                     "视频正在下载，请等待归档完成" if recalling else "当前任务还没有可关联的任务网页"
                 ),
-                "confirm": "确认从当前任务绑定的网页核验并下载视频？系统不会重新提交生成。",
+                "confirm": "",
             },
             {
                 "key": "push",
                 "label": "再次推送服务器" if web.get("result_pushed_at") else "推送服务器",
                 "enabled": not blocked and bool(item.get("video_path")) and bool(web.get("result_push_url")),
                 "reason": busy_reason if blocked else "需要已归档视频和服务器推送配置",
-                "confirm": "确认把当前任务已归档的视频推送到服务器？",
+                "confirm": "",
             },
         ]
 

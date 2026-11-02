@@ -36,7 +36,10 @@ def payload(token: str) -> dict:
         "last_action_at": "2026-11-02T10:00:00+08:00", "last_action": "Mock 任务已同步",
         "recovery": {}, "events": [],
         "actions": [
-            {"key": key, "label": label, "enabled": key != "push", "reason": "测试禁用", "confirm": "确认测试？"}
+            {
+                "key": key, "label": label, "enabled": True, "reason": "",
+                "confirm": "" if key in ("download", "push") else "确认测试？",
+            }
             for key, label in zip(keys, labels)
         ],
         "confirmation_presets": [{"id": "preset_default", "name": "默认确认语", "text": "确认"}],
@@ -137,27 +140,29 @@ async def verify_context(playwright, executable: Path, profile: str, api_base: s
             "/api/v1/videos/generations/job-a/send?confirm_send=true",
             "/api/v1/videos/generations/job-a/send-confirmation?confirm_send=true",
             "/api/v1/videos/generations/job-a/recall?force_redownload=true",
+            "/api/v1/videos/generations/job-a/push-result",
             "/api/v1/videos/generations/job-a/restart-auto",
             "/api/v1/videos/generations/job-a/dispatch-next",
         ]
         for index, action in enumerate(
-            ["prepare", "send", "confirm", "download", "restart_auto", "next_task"],
+            ["prepare", "send", "confirm", "download", "push", "restart_auto", "next_task"],
             start=1,
         ):
             await first.locator(
                 "#doubao-manager-extension-root"
             ).locator(f'[data-task-action="{action}"]').click()
-            await first.locator(
-                "#doubao-manager-extension-root"
-            ).locator('[data-confirm="accept"]').click()
+            if action not in ("download", "push"):
+                await first.locator(
+                    "#doubao-manager-extension-root"
+                ).locator('[data-confirm="accept"]').click()
             for _ in range(50):
                 if len(POSTS) >= index:
                     break
                 await first.wait_for_timeout(100)
         assert POSTS == expected_posts, POSTS
-        assert await first.locator(
+        assert not await first.locator(
             "#doubao-manager-extension-root"
-        ).locator('[data-task-action="push"]').is_disabled()
+        ).locator('[data-role="confirm"]').is_visible()
     if restarted:
         assert "job-a" in first_text
     await first.locator("#doubao-manager-extension-root").evaluate(
@@ -185,6 +190,7 @@ async def check() -> None:
             "/api/v1/videos/generations/job-a/send?confirm_send=true",
             "/api/v1/videos/generations/job-a/send-confirmation?confirm_send=true",
             "/api/v1/videos/generations/job-a/recall?force_redownload=true",
+            "/api/v1/videos/generations/job-a/push-result",
             "/api/v1/videos/generations/job-a/restart-auto",
             "/api/v1/videos/generations/job-a/dispatch-next",
         ], "关闭扩展面板不应额外调用任务或浏览器关闭接口"
