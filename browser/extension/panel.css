@@ -21,6 +21,12 @@ footer.is-error { color: #fb7185; }
 .db-task-actions>button:disabled { cursor: not-allowed; opacity: .38; }
 .db-task-actions>button i { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 6px; color: #c7d2fe; background: rgba(99,102,241,.2); font-style: normal; font-size: 10px; }
 .db-task-actions>button.is-loading span::after { content: " …"; color: #a5b4fc; }
+.db-manual-controls { display: grid; gap: 6px; margin-top: 10px; padding: 9px; border: 1px solid rgba(56,189,248,.15); border-radius: 8px; background: rgba(14,165,233,.06); }
+.db-manual-controls.is-active { border-color: rgba(251,191,36,.3); background: rgba(245,158,11,.08); }
+.db-manual-controls>b { color: #7dd3fc; font-size: 10px; } .db-manual-controls.is-active>b { color: #fcd34d; }
+.db-manual-controls>div { display: flex; flex-wrap: wrap; gap: 6px; }
+.db-manual-control { padding: 6px 9px; border-radius: 7px; color: #bae6fd; background: rgba(14,165,233,.12); font-size: 11px; }
+.db-manual-control:disabled { cursor: not-allowed; opacity: .4; }
 .db-confirm-preset { display: grid; gap: 4px; padding: 2px 0; color: #64748b; font-size: 10px; }
 .db-confirm-preset select { width: 100%; min-width: 0; padding: 7px; border: 1px solid rgba(148,163,184,.16); border-radius: 7px; outline: none; color: #cbd5e1; background: #171d29; font: inherit; }
 .db-task-events { margin-top: 10px; color: #94a3b8; } .db-task-events summary { cursor: pointer; font-size: 11px; }

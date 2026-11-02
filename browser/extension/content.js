@@ -40,7 +40,9 @@
       if (!current || !bindingToken) return;
       const resolved = await send({type: "task.resolve", bindingToken});
       const task = resolved?.data;
-      const definition = task?.actions?.find(item => item.key === action);
+      const definition = [
+        ...(task?.actions || []), ...(task?.manual_controls || [])
+      ].find(item => item.key === action);
       if (!resolved?.ok || !task || !definition?.enabled) {
         panel.feedback(resolved?.error || definition?.reason || "当前操作不可执行", true);
         await sync();

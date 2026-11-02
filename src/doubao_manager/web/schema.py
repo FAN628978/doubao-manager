@@ -63,7 +63,9 @@ def ensure_schema(db) -> None:
                 delivery_error TEXT DEFAULT '',
                 archived_at TEXT DEFAULT '',
                 avoid_account_id TEXT DEFAULT '',
-                extension_binding_token TEXT DEFAULT ''
+                extension_binding_token TEXT DEFAULT '',
+                operator_takeover INTEGER DEFAULT 0,
+                takeover_status TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS video_web_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,6 +161,8 @@ def ensure_schema(db) -> None:
             ("dispatched_at", "TEXT DEFAULT ''"),
             # Opaque identity injected into the exact task tab for the Chrome extension.
             ("extension_binding_token", "TEXT DEFAULT ''"),
+            ("operator_takeover", "INTEGER DEFAULT 0"),
+            ("takeover_status", "TEXT DEFAULT ''"),
         )
         for name, ddl in migrations:
             if name not in columns:

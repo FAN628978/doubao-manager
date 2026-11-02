@@ -138,3 +138,79 @@ def test_extension_actions_call_existing_task_apis():
     for endpoint in expected:
         assert endpoint in background
     assert "taskActions[message.action]" in background
+
+
+def test_takeover_and_resume_affect_only_bound_task(tmp_path, monkeypatch):
+    bridge = build_bridge(tmp_path, monkeypatch)
+    page = BoundPage()
+    token = asyncio.run(bridge.state.video_bind_task_page("job_0", page))
+    asyncio.run(bridge.state.video_bind_task_page("job_1", BoundPage()))
+
+    with TestClient(bridge) as client:
+        takeover = client.post("/api/v1/videos/generations/job_0/takeover")
+        assert takeover.status_code == 200, takeover.text
+        assert takeover.json()["web"]["operator_takeover"] == 1
+        resolved = client.get(
+            "/api/v1/extension/tasks/resolve", params={"binding_token": token}
+        ).json()
+        assert resolved["takeover"]["active"] is True
+        assert all(not action["enabled"] for action in resolved["actions"])
+        assert resolved["manual_controls"][0]["key"] == "resume_takeover"
+        with application.db() as connection:
+            other = connection.execute(
+                "SELECT operator_takeover FROM video_web_jobs WHERE job_id='job_1'"
+            ).fetchone()
+        assert other["operator_takeover"] == 0
+
+        resumed = client.post("/api/v1/videos/generations/job_0/resume-takeover")
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["status"] == "awaiting_manual_send"
+        assert resumed.json()["web"]["operator_takeover"] == 0
+
+
+def test_uncertain_submission_cannot_blindly_resume(tmp_path, monkeypatch):
+    bridge = build_bridge(tmp_path, monkeypatch)
+    with application.db() as connection:
+        connection.execute("UPDATE jobs SET status='needs_review' WHERE id='job_0'")
+        connection.execute(
+            "UPDATE video_web_jobs SET operator_takeover=1,takeover_status='submitting' "
+            "WHERE job_id='job_0'"
+        )
+    with TestClient(bridge) as client:
+        response = client.post("/api/v1/videos/generations/job_0/resume-takeover")
+        assert response.status_code == 409
+        assert "禁止盲目重新提交" in response.json()["detail"]
+        with application.db() as connection:
+            row = connection.execute(
+                "SELECT operator_takeover FROM video_web_jobs WHERE job_id='job_0'"
+            ).fetchone()
+        assert row["operator_takeover"] == 1
+
+
+def test_takeover_cancels_only_current_running_worker(tmp_path, monkeypatch):
+    bridge = build_bridge(tmp_path, monkeypatch)
+    current_page, other_page = BoundPage(), BoundPage()
+    asyncio.run(bridge.state.video_bind_task_page("job_0", current_page))
+    asyncio.run(bridge.state.video_bind_task_page("job_1", other_page))
+    with application.db() as connection:
+        connection.execute("UPDATE jobs SET status='opening' WHERE id='job_0'")
+
+    with TestClient(bridge) as client:
+        async def install_worker():
+            bridge.state.video_pending["job_0"] = asyncio.create_task(
+                asyncio.Event().wait()
+            )
+
+        client.portal.call(install_worker)
+        response = client.post("/api/v1/videos/generations/job_0/takeover")
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "needs_review"
+        assert response.json()["web"]["error_code"] == "MANUAL_TAKEOVER"
+        assert "job_0" not in bridge.state.video_pending
+        assert bridge.state.video_prepared_pages["job_0"] is current_page
+        assert bridge.state.video_prepared_pages["job_1"] is other_page
+        with application.db() as connection:
+            other = connection.execute(
+                "SELECT operator_takeover FROM video_web_jobs WHERE job_id='job_1'"
+            ).fetchone()
+        assert other["operator_takeover"] == 0

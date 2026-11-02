@@ -1682,6 +1682,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         status = item.get("status") or ""
         web = item["web"]
         recovering = bool((item.get("recovery") or {}).get("active"))
+        takeover = bool(web.get("operator_takeover"))
         live_page = prepared_pages.get(item["id"])
         try:
             has_live_page = live_page is not None and not live_page.is_closed()
@@ -1703,13 +1704,17 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             else "进入调度" if pending_status
             else "提交素材"
         )
-        busy_reason = "Claude 正在处理该任务，请等待恢复结束"
+        blocked = recovering or takeover
+        busy_reason = (
+            "当前任务正由人工接管，请先结束接管或恢复自动执行"
+            if takeover else "Claude 正在处理该任务，请等待恢复结束"
+        )
         return [
             {
                 "key": first_key,
                 "label": first_label,
-                "enabled": not recovering and can_prepare and not dispatched,
-                "reason": busy_reason if recovering else (
+                "enabled": not blocked and can_prepare and not dispatched,
+                "reason": busy_reason if blocked else (
                     "任务已进入调度，无需重复点击" if dispatched else "当前状态不能提交素材"
                 ),
                 "confirm": "确认把当前任务交给调度器自动执行？" if pending_status
@@ -1718,31 +1723,31 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             {
                 "key": "send",
                 "label": "确认发送",
-                "enabled": not recovering and status == MANUAL_WAIT and has_page,
-                "reason": busy_reason if recovering else "仅已准备完成的任务可以确认发送",
+                "enabled": not blocked and status == MANUAL_WAIT and has_page,
+                "reason": busy_reason if blocked else "仅已准备完成的任务可以确认发送",
                 "confirm": "确认发送当前任务已经准备好的素材与提示词？",
             },
             {
                 "key": "confirm",
                 "label": "发送确认语",
-                "enabled": not recovering and status in (MANUAL_WAIT, "confirming", "needs_review") and has_page,
-                "reason": busy_reason if recovering else "当前状态不能发送确认语",
+                "enabled": not blocked and status in (MANUAL_WAIT, "confirming", "needs_review") and has_page,
+                "reason": busy_reason if blocked else "当前状态不能发送确认语",
                 "confirm": "确认向当前任务网页发送所选确认语？此操作可能继续视频生成。",
             },
             {
                 "key": "download",
                 "label": "下载视频",
-                "enabled": not recovering and status in (
+                "enabled": not blocked and status in (
                     "downloaded", "needs_review", "failed", MANUAL_WAIT, "confirming", "generating"
                 ) and has_page,
-                "reason": busy_reason if recovering else "当前任务还没有可关联的任务网页",
+                "reason": busy_reason if blocked else "当前任务还没有可关联的任务网页",
                 "confirm": "确认从当前任务绑定的网页核验并下载视频？系统不会重新提交生成。",
             },
             {
                 "key": "push",
                 "label": "再次推送服务器" if web.get("result_pushed_at") else "推送服务器",
-                "enabled": not recovering and bool(item.get("video_path")) and bool(web.get("result_push_url")),
-                "reason": busy_reason if recovering else "需要已归档视频和服务器推送配置",
+                "enabled": not blocked and bool(item.get("video_path")) and bool(web.get("result_push_url")),
+                "reason": busy_reason if blocked else "需要已归档视频和服务器推送配置",
                 "confirm": "确认把当前任务已归档的视频推送到服务器？",
             },
         ]
@@ -1796,6 +1801,38 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "events": events_out,
             "actions": extension_task_actions(item),
             "confirmation_presets": confirmation_presets(),
+            "takeover": {
+                "active": bool(item["web"].get("operator_takeover")),
+                "previous_status": item["web"].get("takeover_status") or "",
+                "can_takeover": not bool(item["web"].get("operator_takeover")) and item["status"] in (
+                    *ACTIVE, MANUAL_WAIT, "needs_review"
+                ),
+                "can_resume": bool(item["web"].get("operator_takeover")),
+            },
+            "manual_controls": (
+                [{
+                    "key": "resume_takeover",
+                    "label": "恢复原任务流程",
+                    "enabled": item["web"].get("takeover_status") != "submitting",
+                    "reason": "提交结果未确认，必须先人工核验" if item["web"].get("takeover_status") == "submitting" else "",
+                    "confirm": "结束人工接管并按原任务进度安全恢复？已提交阶段只会召回原结果。",
+                }]
+                if item["web"].get("operator_takeover")
+                else ([{
+                    "key": "takeover",
+                    "label": "人工接管当前任务",
+                    "enabled": True,
+                    "reason": "",
+                    "confirm": "确认暂停当前任务的自动网页操作并由人工接管？同账号其他任务不受影响。",
+                }] if item["status"] in (*ACTIVE, MANUAL_WAIT, "needs_review") else [])
+                + ([{
+                    "key": "restart_auto",
+                    "label": "重新自动执行",
+                    "enabled": item["web"].get("error_code") != "SUBMISSION_UNCONFIRMED",
+                    "reason": "提交结果未确认，必须先人工核验" if item["web"].get("error_code") == "SUBMISSION_UNCONFIRMED" else "",
+                    "confirm": "确认使用现有“重新自动执行”功能恢复任务？系统会遵守原有额度和状态校验。",
+                }] if item["status"] in ("queued", MANUAL_WAIT, "needs_review", "failed") else [])
+            ),
         }
 
     @app.post("/api/v1/videos/generations/{jobid}/start",tags=["Doubao Web Video"])
@@ -3037,6 +3074,70 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         """Idempotently resume/download an existing result; never submits generation."""
         auth(x_api_key); ensure_schema()
         return await begin_recall(jobid, force_redownload=force_redownload)
+
+    @app.post("/api/v1/videos/generations/{jobid}/takeover", tags=["Chrome Extension"])
+    async def takeover_task(jobid: str, x_api_key: Optional[str] = Header(None)):
+        """Stop automation for one exact task while preserving its page and progress."""
+        auth(x_api_key); ensure_schema()
+        item = detail(jobid)
+        if item["status"] not in (*ACTIVE, MANUAL_WAIT, "needs_review"):
+            raise HTTPException(409, "当前任务状态不支持人工接管")
+        if item["web"].get("operator_takeover"):
+            return item
+        previous_status = item["status"]
+        with db() as c:
+            c.execute(
+                "UPDATE video_web_jobs SET operator_takeover=1,takeover_status=? WHERE job_id=?",
+                (previous_status, jobid),
+            )
+            c.execute(
+                "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
+                (jobid, previous_status, "操作者已接管当前任务网页，自动化操作已暂停", ts()),
+            )
+        task = pending.get(jobid)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if pending.get(jobid) is task:
+                pending.pop(jobid, None)
+        if previous_status in ACTIVE:
+            emit(
+                jobid,
+                "needs_review",
+                "人工接管已暂停当前任务自动化；页面与原任务进度均已保留",
+                code="MANUAL_TAKEOVER",
+            )
+        return detail(jobid)
+
+    @app.post("/api/v1/videos/generations/{jobid}/resume-takeover", tags=["Chrome Extension"])
+    async def resume_takeover(jobid: str, x_api_key: Optional[str] = Header(None)):
+        """Resume safely: pre-submit may restart; post-submit only recalls existing work."""
+        auth(x_api_key); ensure_schema()
+        item = detail(jobid)
+        if not item["web"].get("operator_takeover"):
+            raise HTTPException(409, "当前任务没有处于人工接管状态")
+        previous_status = item["web"].get("takeover_status") or item["status"]
+        if previous_status == "submitting":
+            raise HTTPException(
+                409,
+                "接管发生在提交结果未确认阶段；请先核对豆包会话，禁止盲目重新提交",
+            )
+        with db() as c:
+            c.execute(
+                "UPDATE video_web_jobs SET operator_takeover=0 WHERE job_id=?",
+                (jobid,),
+            )
+            c.execute(
+                "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
+                (jobid, item["status"], "人工接管已结束，按原任务进度恢复", ts()),
+            )
+        if previous_status in ("opening", "configuring", "uploading"):
+            req = await reset_generation(jobid)
+            req.submit_mode = "auto"
+            start_worker(jobid, req, avoid_account_for(jobid))
+        elif previous_status in ("confirming", "generating", "downloading"):
+            await begin_recall(jobid, force_redownload=False)
+        return detail(jobid)
 
     @app.post("/api/v1/videos/generations/{jobid}/download-result", tags=["Doubao Web Video"])
     async def download_result(jobid: str, confirm_review: bool = False,

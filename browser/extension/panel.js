@@ -81,6 +81,10 @@
             ${action.enabled ? "" : "disabled"} title="${escapeHtml(action.enabled ? action.confirm : action.reason)}">
             <i>${index + 1}</i><span>${escapeHtml(action.label)}</span>
           </button>`).join("");
+        const controls = (task.manual_controls || []).map(control => `
+          <button type="button" class="db-manual-control" data-task-action="${escapeHtml(control.key)}"
+            data-base-disabled="${!control.enabled}" ${control.enabled ? "" : "disabled"}
+            title="${escapeHtml(control.enabled ? control.confirm : control.reason)}">${escapeHtml(control.label)}</button>`).join("");
         const events = (task.events || []).slice(-5).reverse().map(event => `
           <li><time>${escapeHtml(formatTime(event.timestamp))}</time><span>${escapeHtml(event.message)}</span></li>`).join("");
         root.querySelector('[data-role="content"]').innerHTML = `
@@ -95,6 +99,8 @@
             <div><dt>最近操作</dt><dd>${escapeHtml(formatTime(task.last_action_at))}</dd></div>
           </dl>
           ${error ? `<div class="db-task-error"><b>当前异常</b><span>${escapeHtml(error)}</span></div>` : ""}
+          ${controls ? `<section class="db-manual-controls ${task.takeover?.active ? "is-active" : ""}">
+            <b>${task.takeover?.active ? "人工接管中" : "人工与恢复"}</b><div>${controls}</div></section>` : ""}
           <section class="db-task-actions" data-role="actions">
             ${actions}
             <label class="db-confirm-preset"><span>确认语预设</span><select data-role="confirmation-preset">${presets}</select></label>
