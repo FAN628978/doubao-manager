@@ -115,6 +115,7 @@ def test_explicit_tab_tokens_resolve_distinct_tasks(tmp_path, monkeypatch):
         assert resolved_second.json()["job_id"] == "job_1"
         assert resolved_first.json()["account_name"] == "扩展账号"
         assert resolved_first.json()["last_action"] == "任务 0 已准备"
+        assert resolved_first.json()["recall_state"] == ""
         actions = resolved_first.json()["actions"]
         assert [action["label"] for action in actions] == [
             "提交素材", "确认发送", "发送确认语", "下载视频", "推送服务器"

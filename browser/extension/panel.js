@@ -73,7 +73,9 @@
       },
       renderTask(task) {
         root.classList.remove("is-loading");
-        root.querySelector('[data-role="status"]').textContent = stateLabels[task.status] || task.status;
+        const statusText = task.recall_state === "recalling"
+          ? "正在下载视频" : (stateLabels[task.status] || task.status);
+        root.querySelector('[data-role="status"]').textContent = statusText;
         const mode = task.submit_mode === "manual" ? "人工发送" : "自动执行";
         const error = task.error_message || task.error_code;
         const presets = (task.confirmation_presets || []).map(preset =>
@@ -98,7 +100,7 @@
             <div><dt>集数</dt><dd>${escapeHtml(task.episode_id || "—")}</dd></div>
             <div><dt>分镜</dt><dd>${escapeHtml(task.shot_id || "—")}</dd></div>
             <div class="wide"><dt>任务 ID</dt><dd title="${escapeHtml(task.job_id)}">${escapeHtml(task.job_id)}</dd></div>
-            <div><dt>状态</dt><dd>${escapeHtml(stateLabels[task.status] || task.status)}</dd></div>
+            <div><dt>状态</dt><dd>${escapeHtml(statusText)}</dd></div>
             <div><dt>最近操作</dt><dd>${escapeHtml(formatTime(task.last_action_at))}</dd></div>
           </dl>
           ${error ? `<div class="db-task-error"><b>当前异常</b><span>${escapeHtml(error)}</span></div>` : ""}
@@ -109,7 +111,9 @@
             <label class="db-confirm-preset"><span>确认语预设</span><select data-role="confirmation-preset">${presets}</select></label>
           </section>
           <details class="db-task-events" ${error ? "open" : ""}><summary>最近操作记录</summary><ul>${events || "<li><span>暂无操作记录</span></li>"}</ul></details>`;
-        this.feedback(task.last_action || "任务状态已同步");
+        this.feedback(task.recall_state === "recalling"
+          ? "正在从当前任务绑定的网页下载并校验视频…"
+          : (task.last_action || "任务状态已同步"));
       },
       feedback(message, failed = false) {
         const footer = root.querySelector('[data-role="feedback"]');

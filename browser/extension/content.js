@@ -56,7 +56,9 @@
           type: "task.action", action, jobId: task.job_id, presetId
         });
         if (!response?.ok) throw new Error(response?.error || "操作失败");
-        panel.feedback(`${definition.label}操作成功`);
+        panel.feedback(action === "download"
+          ? "下载任务已启动；完成后会自动归档，最后一个任务完成时将关闭账号窗口。"
+          : `${definition.label}操作成功`);
       } catch (error) {
         panel.feedback(error.message || String(error), true);
       } finally {

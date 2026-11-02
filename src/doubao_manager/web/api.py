@@ -1685,6 +1685,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     def extension_task_actions(item: dict) -> list[dict]:
         status = item.get("status") or ""
         web = item["web"]
+        recalling = (web.get("recall_state") or "") == "recalling"
         recovering = bool((item.get("recovery") or {}).get("active"))
         takeover = bool(web.get("operator_takeover"))
         live_page = prepared_pages.get(item["id"])
@@ -1741,10 +1742,12 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             {
                 "key": "download",
                 "label": "下载视频",
-                "enabled": not blocked and status in (
+                "enabled": not blocked and not recalling and status in (
                     "downloaded", "needs_review", "failed", MANUAL_WAIT, "confirming", "generating"
                 ) and has_page,
-                "reason": busy_reason if blocked else "当前任务还没有可关联的任务网页",
+                "reason": busy_reason if blocked else (
+                    "视频正在下载，请等待归档完成" if recalling else "当前任务还没有可关联的任务网页"
+                ),
                 "confirm": "确认从当前任务绑定的网页核验并下载视频？系统不会重新提交生成。",
             },
             {
@@ -1796,6 +1799,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "task_name": item.get("task_name") or "",
             "status": item.get("status") or "",
             "submit_mode": item["web"].get("submit_mode") or "auto",
+            "recall_state": item["web"].get("recall_state") or "",
             "error_code": item["web"].get("error_code") or "",
             "error_message": item.get("error_message") or "",
             "updated_at": item.get("updated_at") or "",
