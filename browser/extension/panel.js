@@ -64,13 +64,6 @@
     return {
       root,
       setActionHandler(handler) { actionHandler = handler; },
-      setBusy(action, busy) {
-        root.querySelectorAll("[data-task-action]").forEach(button => {
-          button.disabled = busy || button.dataset.baseDisabled === "true";
-          button.classList.toggle("is-loading", busy && button.dataset.taskAction === action);
-          button.setAttribute("aria-busy", String(busy && button.dataset.taskAction === action));
-        });
-      },
       renderWaiting(message) {
         renderSignature = "";
         root.classList.remove("is-loading");
@@ -82,8 +75,9 @@
         if (signature === renderSignature) return;
         renderSignature = signature;
         root.classList.remove("is-loading");
-        const statusText = task.recall_state === "recalling"
-          ? "正在下载视频" : (stateLabels[task.status] || task.status);
+        const redownloading = task.recall_state === "recalling" && task.status === "downloaded";
+        const statusText = redownloading
+          ? "正在重新下载视频" : (stateLabels[task.status] || task.status);
         root.querySelector('[data-role="status"]').textContent = statusText;
         const mode = task.submit_mode === "manual" ? "人工发送" : "自动执行";
         const error = task.error_message || task.error_code;
@@ -121,9 +115,11 @@
           </section>
           <details class="db-task-events" ${error ? "open" : ""}><summary>最近操作记录</summary><ul>${events || "<li><span>暂无操作记录</span></li>"}</ul></details>`;
         bindTaskButtons();
-        this.feedback(task.recall_state === "recalling"
-          ? "正在从当前任务绑定的网页下载并校验视频…"
-          : (task.last_action || "任务状态已同步"));
+        this.feedback(redownloading
+          ? "正在从当前任务绑定的网页重新下载并校验视频…"
+          : task.recall_state === "recalling"
+            ? "正在原任务页面等待生成结果；完成后会自动下载归档…"
+            : (task.last_action || "任务状态已同步"));
       },
       feedback(message, failed = false) {
         const footer = root.querySelector('[data-role="feedback"]');

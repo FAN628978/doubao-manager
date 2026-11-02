@@ -21,6 +21,13 @@ from web_api import (VideoRequest, ReviewNeeded, perform, recover_interrupted_jo
                      normalize_prompt_newlines, prompts_equivalent)
 
 HTML = r'''<!doctype html><html lang="zh"><head><meta charset="utf-8"/></head><body>
+<button type="button" data-testid="chat_input_action_model" onclick="document.getElementById('model-menu').hidden=false">Seedance 2.0 Mini</button>
+<div id="model-menu" hidden>
+<button type="button" role="menuitem">Seedance 2.5</button>
+<button type="button" role="menuitem">Seedance 2.0</button>
+<button type="button" role="menuitem">Seedance 2.0 Fast</button>
+<button type="button" role="menuitem">Seedance 2.0 Mini</button>
+</div>
 <select data-testid="video-mode" aria-label="生成模式"><option value="text2video">文生视频</option><option value="image2video">首帧图生视频</option><option value="first_last_frame">首尾帧生视频</option><option value="reference_images">参考生视频</option></select>
 <select data-testid="video-ratio" aria-label="画幅比例"><option>16:9</option><option>9:16</option><option>1:1</option></select>
 <select data-testid="video-duration" aria-label="时长"><option value="4">4秒</option><option value="10">10秒</option><option value="15">15秒</option></select>
@@ -387,6 +394,46 @@ def test_member_account_priority_and_forced_model(tmp_path, monkeypatch):
         assert updated.status_code == 200, updated.text
         assert updated.json()['is_member'] is True
         assert updated.json()['priority'] == 30
+
+
+def test_member_and_non_member_models_follow_local_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'model-settings.sqlite3')
+    with TestClient(application.app) as client:
+        defaults = client.get('/api/settings/video-models')
+        assert defaults.status_code == 200
+        assert defaults.json()['member_model'] == 'Seedance 2.0'
+        assert defaults.json()['non_member_model'] == 'Seedance 2.0 Mini'
+
+        saved = client.put('/api/settings/video-models', json={
+            'member_model': 'Seedance 2.0 Fast',
+            'non_member_model': 'Seedance 2.5',
+        })
+        assert saved.status_code == 200, saved.text
+
+        member = client.post('/api/accounts', json={
+            'name': '模型会员', 'is_member': True,
+        }).json()
+        normal = client.post('/api/accounts', json={
+            'name': '模型非会员', 'is_member': False,
+        }).json()
+        member_job = client.post('/api/v1/videos/generations', json={
+            'account_id': member['id'], 'prompt': '会员模型',
+            'model': 'Seedance 2.0 Mini', 'auto_start': False,
+        })
+        normal_job = client.post('/api/v1/videos/generations', json={
+            'account_id': normal['id'], 'prompt': '非会员模型',
+            'model': 'Seedance 2.0', 'auto_start': False,
+        })
+        assert member_job.status_code == 202, member_job.text
+        assert normal_job.status_code == 202, normal_job.text
+        assert member_job.json()['web']['model'] == 'Seedance 2.0 Fast'
+        assert normal_job.json()['web']['model'] == 'Seedance 2.5'
+
+        invalid = client.put('/api/settings/video-models', json={
+            'member_model': 'unknown',
+            'non_member_model': 'Seedance 2.0 Mini',
+        })
+        assert invalid.status_code == 422
 
 
 def test_paused_account_is_not_used_for_new_generations(tmp_path, monkeypatch):

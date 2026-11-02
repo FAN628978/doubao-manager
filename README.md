@@ -21,7 +21,7 @@
 
 **账号每日视频额度：** 每个账号每天 30 秒（按本地自然日归零，可用环境变量 `DOUBAO_DAILY_VIDEO_SECONDS` 覆盖）。任务创建时按 `duration` 占用额度，出片归档后记为已消耗；明确未提交或失败的占用会释放，可能已提交但无法确认的任务继续标记为未知占用。原任务重发或补发确认语属于新的生成尝试，会保留上一次可能已消耗的额度并重新占用本次额度。提交任务时 `account_id` 留空则自动选择当日剩余额度足够的账号（优先空闲账号），额度不足会返回 409 而非硬凑。额度信息在「账号管理」列表、`GET /api/accounts/{id}/quota`、任务详情 `quota` 字段中可见。
 
-**账号会员与优先级：** 账号管理中可标记会员账号并设置 `0～1000` 的优先级。自动选号优先避开重试原账号，再选择扣除本次任务时长后剩余额度最少的可用账号，以减少额度碎片；额度适配相同时优先空闲账号，再按优先级和档案顺序选择。会员账号创建或启动视频任务时固定使用 `Seedance 2.0`，调用方传入的 `model` 参数会被忽略。
+**账号会员与优先级：** 账号管理中可标记会员账号并设置 `0～1000` 的优先级。自动选号优先避开重试原账号，再选择扣除本次任务时长后剩余额度最少的可用账号，以减少额度碎片；额度适配相同时优先空闲账号，再按优先级和档案顺序选择。会员与非会员账号的模型分别由本机“任务设置”统一配置，调用方传入的 `model` 参数始终忽略。
 
 **暂停账号：** 账号管理中的“暂停使用”会让该账号退出新任务的自动选择，并拒绝用它新建、启动或人工发送生成任务；已经运行的任务不会被中断。暂停期间仍可打开浏览器维护登录状态或查看历史结果，点击“恢复使用”即可重新启用。
 
@@ -36,6 +36,10 @@
 **处理完 → 已归档：** 视频下载校验成功后任务进入“处理完”，不会自动归档。“已归档”是一个独立队列，由操作者在任务页点“✔ 归档”（或批量“归档所选”）把“处理完”的任务移入，也可点“取消归档”退回处理完；归档只记录时间，不动任何文件。只有已归档的任务才会出现在“已归档”队列与概览的“已归档视频”统计里。
 
 **执行流程：** 轮询间隔按约 1 / 2 / 4 / 8 秒自适应；账号无等待任务且无人工准备页面时，浏览器空闲 30 秒后关闭。自动步骤默认不加随机延迟，可通过 `DOUBAO_STEP_DELAY_SECONDS`（或 `DOUBAO_STEP_DELAY_MIN_SECONDS` / `DOUBAO_STEP_DELAY_MAX_SECONDS`）开启。执行心跳默认每 15 秒写入一次，可用 `DOUBAO_HEARTBEAT_SECONDS` 调整。
+
+新任务创建或开始执行时不会自动切换管理台视图，也不会把任务标签页强制置于前台；需要查看时可手动点击“打开网页”。
+
+同一账号同一时间只执行一个“正在处理”任务；后续任务必须等待该账号的当前任务归档、失败或显式释放占用后才能继续。不同账号仍可按“正在处理队列上限”并行执行。
 
 ## 安装与启动（Windows 10/11）
 
@@ -58,7 +62,7 @@
 
 - 标签页通过后端生成的随机绑定令牌识别任务，不通过页面标题、URL 或账号名猜测；同账号多个标签页可绑定不同任务。
 - 面板可折叠或关闭；关闭面板不会关闭标签页、浏览器或后台任务。页面刷新、扩展 Service Worker 重启或项目 Chrome 重启后会从持久化绑定恢复。
-- “人工接管当前任务”只暂停该任务的自动网页协程。同账号其他任务继续执行；恢复时，提交前阶段可重新准备，已提交阶段只召回原结果，提交结果不明确时禁止自动重提。
+- “人工接管当前任务”只暂停该任务的自动网页协程。同账号其他任务继续执行；无论在哪个阶段恢复，任务都会回到“生成中”，复用原绑定页面等待原结果，不会重新提交；出片后继续自动下载归档和回推。
 - 若设置了 `DOUBAO_LOCAL_API_KEY`，点击面板右上角齿轮，在扩展独立设置页填写同一个 Key。Key 只保存在扩展私有存储，由 Service Worker 添加到请求头，不会注入豆包网页 DOM。
 
 ### 便携版升级并保留登录状态
@@ -130,7 +134,7 @@ test-live.bat --job-id job_xxxxxxxxxxxx
 | `mode` | string | 可选 | `text2video` | `text2video` / `image2video` / `first_last_frame` / `reference_images` |
 | `ratio` | string | 可选 | `16:9` | 画幅，以豆包为准（常见 `16:9` / `9:16` / `1:1`） |
 | `duration` | int | 可选 | `4` | 秒数，以豆包为准（常见 `4` / `10` / `15`） |
-| `model` | string | 可选 | 豆包默认 | `Seedance 2.5` / `Seedance 2.0` / `Seedance 2.0 Fast` / `Seedance 2.0 Mini` |
+| `model` | string | 可选 | 忽略 | 保留兼容但不参与选择；最终按本机“任务设置”中的会员/非会员模型执行 |
 | `project_name` `episode_name` `shot_name` | string | 可选 | 空 | 项目、集数、镜头名称 |
 | `idempotency_key` | string | 可选 | 空 | 幂等键，重复调用不重复建单 |
 | `auto_start` | bool | 可选 | `true` | `true` 立即执行；`false` 排队后用 `start` 启动 |
@@ -167,12 +171,12 @@ test-live.bat --job-id job_xxxxxxxxxxxx
 ### 完整示例（curl）
 
 ```bash
-# 参考生视频，多张图 + 模型 + 15 秒
+# 参考生视频，多张图 + 15 秒（模型由本机任务设置决定）
 curl -X POST http://127.0.0.1:8765/api/v1/videos \
   -F "account_id=acc_9b661e5a38" \
   -F "prompt=@图1 的红色纸船作为主体，@图2 的蓝色方块作为湖面背景，缓缓漂动" \
   -F "mode=reference_images" \
-  -F "ratio=16:9" -F "duration=15" -F "model=Seedance 2.0 Fast" \
+  -F "ratio=16:9" -F "duration=15" \
   -F "project_name=大妖也得为我打工" -F "episode_name=第一集" -F "shot_name=苏小棠抬头" \
   -F "reference=@D:/images/角色.png" -F "reference=@D:/images/场景.png"
 
@@ -264,6 +268,7 @@ Host lzg
 | POST | `/api/v1/videos/generations/{id}/close-window` | 只关闭任务所属账号的浏览器窗口，不取消任务、不删除登录状态或生成结果 |
 | GET/PUT | `/api/settings/auto-dispatch` | 查询或设置新任务是否自动进入调度 |
 | GET/PUT | `/api/settings/video-submit-mode` | 查询或设置进入调度后是否自动执行（`auto` / `manual`） |
+| GET/PUT | `/api/settings/video-models` | 查询或设置会员账号与非会员账号使用的视频模型 |
 | GET/POST/PUT/DELETE | `/api/v1/videos/confirmation-presets` | 查询、新增、编辑或删除确认语预设；默认预设可编辑但不可删除，自动执行遇到确认步骤时实时使用该默认预设 |
 | POST | `/api/v1/videos/generations/{id}/send-confirmation?confirm_send=true` | 从请求体选择 `preset_id`，随时向任务已记录的豆包会话页发送该确认语；重复发送可能再次触发生成或消耗额度 |
 | POST | `/api/v1/videos/generations/{id}/download-result?confirm_review=true` | 兼容旧调用；内部使用统一召回流程 |

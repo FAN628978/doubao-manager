@@ -116,11 +116,14 @@ def test_auto_restart_rematches_to_fresh_account(
             ],
         )
 
-    opened_accounts = []
+    browser_actions = []
 
     async def fake_browser(account_id):
-        opened_accounts.append(account_id)
+        browser_actions.append(("open", account_id))
         return account_id
+
+    async def fake_close_browser(account_id):
+        browser_actions.append(("close", account_id))
 
     async def fake_perform(
         _ctx, _req, _assets, target, _status, _page_url, _binding,
@@ -146,6 +149,7 @@ def test_auto_restart_rematches_to_fresh_account(
         base_dir=tmp_path,
         downloads_dir=tmp_path / "videos",
         serialize=application.job_row,
+        close_browser=fake_close_browser,
     )
 
     with TestClient(bridge) as client:
@@ -190,7 +194,10 @@ def test_auto_restart_rematches_to_fresh_account(
         assert state["id"] == jobid
         assert state["status"] == "downloaded", state
         assert state["account_id"] == "account_2"
-        assert opened_accounts == ["account_2"]
+        assert browser_actions[:2] == [
+            ("close", "account_1"),
+            ("open", "account_2"),
+        ]
 
     with application.db() as conn:
         old_quota = web_api.quota_summary(conn, "account_1")

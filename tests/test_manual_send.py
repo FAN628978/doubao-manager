@@ -22,6 +22,13 @@ from test_v3 import launch_chromium
 MP4 = b"\x00\x00\x00\x20" + b"ftyp" + b"isom" + b"\x00" * 4 + b"\x00" * 4064
 
 HTML = r'''<!doctype html><html lang="zh"><head><meta charset="utf-8"/></head><body>
+<button type="button" data-testid="chat_input_action_model" onclick="document.getElementById('model-menu').hidden=false">Seedance 2.0 Mini</button>
+<div id="model-menu" hidden>
+<button type="button" role="menuitem">Seedance 2.5</button>
+<button type="button" role="menuitem">Seedance 2.0</button>
+<button type="button" role="menuitem">Seedance 2.0 Fast</button>
+<button type="button" role="menuitem">Seedance 2.0 Mini</button>
+</div>
 <select data-testid="video-mode" aria-label="生成模式"><option value="text2video">文生视频</option></select>
 <select data-testid="video-ratio" aria-label="画幅比例"><option>16:9</option><option>9:16</option></select>
 <select data-testid="video-duration" aria-label="时长"><option value="1">1秒</option><option value="4">4秒</option></select>
@@ -39,6 +46,15 @@ document.querySelector('[data-testid="chat_input"] button').addEventListener('cl
   setTimeout(()=>say('视频生成完成。<div class="block-video-x"><video src="https://www.doubao.com/mock.mp4"></video></div>'),300);
 });
 </script></body></html>'''
+
+
+def test_task_start_does_not_force_task_page_to_front():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src" / "doubao_manager" / "web" / "automation.py"
+    ).read_text(encoding="utf-8")
+    perform_body = source[source.index("async def perform("):]
+    assert "bring_to_front" not in perform_body
 
 
 @pytest.mark.parametrize('submit_mode', ['manual', 'auto'])

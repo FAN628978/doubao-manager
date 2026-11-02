@@ -1068,7 +1068,6 @@ async def perform(ctx, req: VideoRequest, assets: dict[str, Path], target: Path,
                 fallback=req.task_name,
             ),
         )
-        await page.bring_to_front()
         # The composer is wired up after the document exists. Clicking the video skill
         # before then does nothing at all, so wait for it instead of a blind sleep.
         try:
@@ -1118,13 +1117,9 @@ async def perform(ctx, req: VideoRequest, assets: dict[str, Path], target: Path,
             await on_binding(int(initial.get("videoCards") or 0))
         if req.submit_mode == "manual":
             # 人工发送：只做到“输入框里已经填好提示词和素材”，绝不点击发送。
-            # 页面保持打开并置于前台，由操作者在豆包网页亲自发送。
+            # 页面保持打开但不主动切到前台；操作者需要时可点“打开网页”。
             if on_manual_ready is None:
                 raise ReviewNeeded("MANUAL_MODE_UNSUPPORTED", "适配器未配置人工发送就绪回调")
-            try:
-                await page.bring_to_front()
-            except Exception:
-                pass
             await on_manual_ready(page, initial)
             return {"manual": True, "video_url": "", "web_page_url": initial.get("url") or "",
                     "output": ""}

@@ -37,9 +37,11 @@ from .config import (
     MAX_IMAGE,
     MAX_VIDEO,
     MEMBER_MODEL,
+    NON_MEMBER_MODEL,
     MODES,
     REAL_CHAT_URL,
     TERMINAL,
+    VIDEO_MODELS,
 )
 from .models import (
     AutoDispatchSetting,
@@ -51,6 +53,7 @@ from .models import (
     QueueAccountRequest,
     ReviewNeeded,
     SubmitModeSetting,
+    VideoModelSetting,
     VideoRequest,
 )
 from .quota import (
@@ -97,8 +100,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if resolved != allowed and allowed not in resolved.parents:
             raise HTTPException(409, "data 中的文件路径超出允许目录")
         return resolved
-    # Manual send/recall operations remain serialized per account. Automatic jobs
-    # use dedicated pages and may run concurrently in the same browser context.
+    # Every account is a single execution lane. Different accounts may run in
+    # parallel, but jobs sharing one account must wait until its owner releases it.
     locks: dict[str, asyncio.Lock] = {}
     pending: dict[str, asyncio.Task] = {}
     # 每个任务从开始执行起就绑定自己的网页句柄。人工发送、异常复查和关联下载
@@ -111,9 +114,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     background_tasks: set[asyncio.Task] = set()
     app.state.video_background_tasks = background_tasks
     # The processing limit controls how many machine-owned jobs may run at once.
-    # Automatic browser work is limited only by the global processing setting.
-    # Each task owns a dedicated page, so jobs from the same account can progress
-    # concurrently without sharing page state.
+    # The account lane below adds the stricter per-account limit of one task.
     processing_condition = asyncio.Condition()
     active_processing = 0
     processing_job_ids: set[str] = set()
@@ -395,8 +396,11 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             processing_job_ids.discard(jobid)
 
     async def acquire_account_slot(jobid: str, account_id: str) -> None:
-        """Track this job as an active user of the account browser context."""
+        """Wait for exclusive ownership of one account browser context."""
         async with account_condition:
+            await account_condition.wait_for(
+                lambda: not (account_owners.get(account_id, set()) - {jobid})
+            )
             account_owners.setdefault(account_id, set()).add(jobid)
 
     async def acquire_account_slot_with_timeout(
@@ -421,16 +425,19 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     ) -> None:
         """Release the account lane as soon as the machine work ends.
 
-        ``needs_review`` used to keep the lane forever; once every account had one
-        such task the automatic queue could never start another job. Only the
-        operator-owned manual-send page keeps its lane, because a person is still
-        using that tab.
+        Ordinary ``needs_review`` hand-offs release the lane so the queue cannot
+        freeze. Manual-send and active takeover pages keep it because an operator
+        is still using that exact account until the task resumes or is released.
         """
         with db() as c:
             row = c.execute(
-                "SELECT status FROM jobs WHERE id=?", (jobid,)
+                "SELECT j.status,COALESCE(w.operator_takeover,0) AS operator_takeover "
+                "FROM jobs j LEFT JOIN video_web_jobs w ON w.job_id=j.id WHERE j.id=?",
+                (jobid,),
             ).fetchone()
-        if not row or row["status"] != MANUAL_WAIT:
+        if not row or (
+            row["status"] != MANUAL_WAIT and not bool(row["operator_takeover"])
+        ):
             await release_account_slot(jobid, account_id)
 
     async def release_account_slot_later(jobid: str, account_id: str) -> None:
@@ -487,6 +494,26 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "SELECT 1 FROM local_settings WHERE key='auto_dispatch_enabled'"
             ).fetchone() is not None
 
+    def local_video_models() -> tuple[str, str]:
+        with db() as c:
+            rows = {
+                row["key"]: str(row["value"]).strip()
+                for row in c.execute(
+                    "SELECT key,value FROM local_settings "
+                    "WHERE key IN ('member_video_model','non_member_video_model')"
+                ).fetchall()
+            }
+        member = rows.get("member_video_model", MEMBER_MODEL)
+        non_member = rows.get("non_member_video_model", NON_MEMBER_MODEL)
+        return (
+            member if member in VIDEO_MODELS else MEMBER_MODEL,
+            non_member if non_member in VIDEO_MODELS else NON_MEMBER_MODEL,
+        )
+
+    def apply_local_account_model(req: VideoRequest, account) -> None:
+        member_model, non_member_model = local_video_models()
+        enforce_account_model(req, account, member_model, non_member_model)
+
     def local_ignore_quota_check() -> bool:
         with db() as c:
             row = c.execute(
@@ -534,6 +561,34 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 ("1" if payload.auto_dispatch_enabled else "0",),
             )
         return {"auto_dispatch_enabled": payload.auto_dispatch_enabled}
+
+    @app.get("/api/settings/video-models", tags=["Local Settings"])
+    async def get_video_model_settings():
+        ensure_schema()
+        member_model, non_member_model = local_video_models()
+        return {
+            "member_model": member_model,
+            "non_member_model": non_member_model,
+            "available_models": list(VIDEO_MODELS),
+        }
+
+    @app.put("/api/settings/video-models", tags=["Local Settings"])
+    async def update_video_model_settings(payload: VideoModelSetting):
+        ensure_schema()
+        with db() as c:
+            c.executemany(
+                "INSERT INTO local_settings(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (
+                    ("member_video_model", payload.member_model),
+                    ("non_member_video_model", payload.non_member_model),
+                ),
+            )
+        return {
+            "member_model": payload.member_model,
+            "non_member_model": payload.non_member_model,
+            "available_models": list(VIDEO_MODELS),
+        }
 
     @app.get("/api/settings/processing-limit", tags=["Local Settings"])
     async def get_processing_limit():
@@ -609,7 +664,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     def fingerprint(req):
         # Display naming is metadata, not generation input; changing it must not break
         # idempotent reuse of an already submitted H3 task.
-        val = req.model_dump(exclude={"idempotency_key", "auto_start", "task_name", "result_push_url", "result_push_token"})
+        val = req.model_dump(exclude={"idempotency_key", "auto_start", "task_name", "model", "result_push_url", "result_push_token"})
         return hashlib.sha256(json.dumps(val, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def resolve_assets(req):
@@ -1090,12 +1145,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 idle_close = idle_close_tasks.pop(req.account_id, None)
                 if idle_close is not None and not idle_close.done():
                     idle_close.cancel()
-                enforce_account_model(req, account)
+                apply_local_account_model(req, account)
                 with db() as c:
-                    if bool(account_value(account, "is_member", 0)):
-                        c.execute("UPDATE video_web_jobs SET model=? WHERE job_id=?", (MEMBER_MODEL, jobid))
-                # Multiple jobs may share one account context. perform() creates a
-                # dedicated page for each job and binds that page before any action.
+                    c.execute(
+                        "UPDATE video_web_jobs SET model=? WHERE job_id=?",
+                        (req.model or "", jobid),
+                    )
+                # 同一账号只允许一个任务执行；必须等前一个任务释放账号占用。
                 if not await acquire_account_slot_with_timeout(jobid, req.account_id):
                     defer_job(jobid, "登记账号任务失败，后台自动重试")
                     await release_processing_job(jobid)
@@ -1574,6 +1630,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         """Persist a generation request and optionally start it. Shared by the JSON and multipart entry points."""
         uses_local_defaults = req.submit_mode is None
         req.submit_mode = req.submit_mode or local_submit_mode()
+        # 模型完全由本机的会员/非会员设置决定，请求参数不参与选择。
+        req.model = None
         if uses_local_defaults and "auto_start" not in req.model_fields_set:
             req.auto_start = local_auto_dispatch_enabled()
         # 兼容旧调用约定：显式指定 manual 的调用仍先排队；本机默认设置则允许
@@ -1588,7 +1646,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             if account["archived"]: raise HTTPException(409, "账号已归档")
             if bool(account_value(account, "paused", 0)):
                 raise HTTPException(409, "账号已暂停使用，请先恢复账号")
-            enforce_account_model(req, account)
+            apply_local_account_model(req, account)
         resolve_assets(req)
         fp = fingerprint(req)
         if req.idempotency_key:
@@ -1693,10 +1751,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 idle_close.cancel()
             if bool(account_value(account, "paused", 0)):
                 raise HTTPException(409, "账号已暂停使用，请先恢复账号")
-            enforce_account_model(req, account)
+            apply_local_account_model(req, account)
         with db() as c:
-            if req.account_id and bool(account_value(get_account(req.account_id), "is_member", 0)):
-                c.execute("UPDATE video_web_jobs SET model=? WHERE job_id=?", (MEMBER_MODEL, jobid))
+            if req.account_id:
+                c.execute(
+                    "UPDATE video_web_jobs SET model=? WHERE job_id=?",
+                    (req.model or "", jobid),
+                )
             row = c.execute("SELECT status FROM jobs WHERE id=?", (jobid,)).fetchone()
             if not row or row["status"] != "queued":
                 raise HTTPException(409,"任务可能已提交或处理中，拒绝重复提交")
@@ -1874,9 +1935,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             manual_controls.append({
                 "key": "resume_takeover",
                 "label": "恢复原任务流程",
-                "enabled": item["web"].get("takeover_status") != "submitting",
-                "reason": "提交结果未确认，必须先人工核验" if item["web"].get("takeover_status") == "submitting" else "",
-                "confirm": "结束人工接管并按原任务进度安全恢复？已提交阶段只会召回原结果。",
+                "enabled": True,
+                "reason": "",
+                "confirm": "结束人工接管，恢复为生成中并继续等待原结果？完成后会自动下载归档和回推，不会重新提交。",
             })
         elif item["status"] in (*ACTIVE, MANUAL_WAIT, "needs_review"):
             manual_controls.append({
@@ -1891,7 +1952,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "label": "重新自动执行",
             "enabled": restart_enabled,
             "reason": restart_reason,
-            "confirm": "确认使用现有“重新自动执行”功能恢复任务？系统会遵守原有额度和状态校验。",
+            "confirm": "确认关闭原账号窗口后重新自动执行？系统会遵守原有额度和状态校验。",
         }, {
             "key": "next_task",
             "label": "下一个任务",
@@ -2086,6 +2147,29 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 pass
         return req
 
+    async def close_previous_browser_before_restart(
+        jobid: str, account_id: str
+    ) -> None:
+        """Close the old account window before a restarted worker can open a new one."""
+        if not account_id or close_browser is None:
+            return
+        if account_is_busy(account_id, ignore_jobid=jobid):
+            raise HTTPException(
+                409,
+                "原账号窗口正被其他任务使用，暂不能关闭并重新自动执行",
+            )
+        idle_close = idle_close_tasks.pop(account_id, None)
+        if idle_close is not None and not idle_close.done():
+            idle_close.cancel()
+        try:
+            await close_browser(account_id)
+        except Exception as exc:
+            raise HTTPException(
+                502,
+                f"关闭原账号浏览器窗口失败，任务尚未重新启动：{str(exc)[:160]}",
+            ) from exc
+        prepared_pages.pop(jobid, None)
+
     @app.post("/api/v1/videos/generations/{jobid}/prepare-manual", tags=["Doubao Web Video"])
     async def prepare_manual(jobid: str, x_api_key: Optional[str] = Header(None)):
         """Prepare the task page without sending, regardless of its saved submit mode."""
@@ -2106,10 +2190,20 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     @app.post("/api/v1/videos/generations/{jobid}/restart-auto", tags=["Doubao Web Video"])
     async def restart_auto(jobid: str, x_api_key: Optional[str] = Header(None)):
-        """Restart an idle unfinished task and match a fresh available account."""
+        """Close the old account window, then restart with a fresh available account."""
         auth(x_api_key); ensure_schema()
         item = detail(jobid)
         previous_account_id = item.get("account_id") or ""
+        if item["status"] == "downloaded":
+            raise HTTPException(409, "任务已归档，无需重新开始")
+        if item["status"] not in (
+            "queued", MANUAL_WAIT, "confirming", "generating", "needs_review", "failed"
+        ):
+            raise HTTPException(409, "任务正在执行；请等待当前浏览器操作结束后再重新开始")
+        task = pending.get(jobid)
+        if task is not None and not task.done():
+            raise HTTPException(409, "该任务正在执行，请稍后再重新开始")
+        await close_previous_browser_before_restart(jobid, previous_account_id)
         if item["status"] == "queued":
             release_job_quota_hold(jobid)
         req = await reset_generation(jobid, rematch_account=True)
@@ -3223,17 +3317,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     @app.post("/api/v1/videos/generations/{jobid}/resume-takeover", tags=["Chrome Extension"])
     async def resume_takeover(jobid: str, x_api_key: Optional[str] = Header(None)):
-        """Resume safely: pre-submit may restart; post-submit only recalls existing work."""
+        """Resume every takeover by watching the bound page for the original result."""
         auth(x_api_key); ensure_schema()
         item = detail(jobid)
         if not item["web"].get("operator_takeover"):
             raise HTTPException(409, "当前任务没有处于人工接管状态")
-        previous_status = item["web"].get("takeover_status") or item["status"]
-        if previous_status == "submitting":
-            raise HTTPException(
-                409,
-                "接管发生在提交结果未确认阶段；请先核对豆包会话，禁止盲目重新提交",
-            )
+        # 人工可能已在接管期间完成发送或确认。无论接管发生在哪个阶段，
+        # 都只复用原绑定页面等待原结果，不重置任务，也不重新提交生成请求。
+        await begin_recall(jobid, force_redownload=False)
         with db() as c:
             c.execute(
                 "UPDATE video_web_jobs SET operator_takeover=0 WHERE job_id=?",
@@ -3241,14 +3332,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             )
             c.execute(
                 "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
-                (jobid, item["status"], "人工接管已结束，按原任务进度恢复", ts()),
+                (jobid, "generating", "人工接管已结束，恢复生成中并继续等待原结果", ts()),
             )
-        if previous_status in ("opening", "configuring", "uploading"):
-            req = await reset_generation(jobid)
-            req.submit_mode = "auto"
-            start_worker(jobid, req, avoid_account_for(jobid))
-        elif previous_status in ("confirming", "generating", "downloading"):
-            await begin_recall(jobid, force_redownload=False)
         return detail(jobid)
 
     @app.post("/api/v1/videos/generations/{jobid}/download-result", tags=["Doubao Web Video"])
@@ -3768,6 +3853,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "status": before.get("status") or "",
             }
         previous_account_id = before.get("account_id") or ""
+        await close_previous_browser_before_restart(jobid, previous_account_id)
         if before.get("status") == "queued":
             release_job_quota_hold(jobid)
         req = await reset_generation(jobid, rematch_account=True)

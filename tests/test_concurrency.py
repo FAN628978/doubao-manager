@@ -155,7 +155,7 @@ def test_second_account_starts_in_parallel_without_global_browser_lane(tmp_path,
     asyncio.run(run())
 
 
-def test_same_account_jobs_run_concurrently_on_dedicated_pages(tmp_path, monkeypatch):
+def test_same_account_jobs_wait_until_previous_task_releases(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
     monkeypatch.setenv("DOUBAO_MAX_CONCURRENT_ACCOUNTS", "0")
     monkeypatch.setenv("DOUBAO_BROWSER_IDLE_CLOSE_SECONDS", "0")
@@ -256,13 +256,11 @@ def test_same_account_jobs_run_concurrently_on_dedicated_pages(tmp_path, monkeyp
             assert all(response.status_code == 202 for response in created)
             await asyncio.wait_for(first_started.wait(), timeout=1)
             await asyncio.sleep(0.05)
-            await asyncio.wait_for(second_started.wait(), timeout=1)
-            assert maximum_active == 2
-            assert calls == ["并行任务0", "并行任务1"]
+            assert not second_started.is_set()
+            assert maximum_active == 1
+            assert calls == ["并行任务0"]
             job_ids = [response.json()["id"] for response in created]
             assert app.state.video_prepared_pages[job_ids[0]] is bound_pages["并行任务0"]
-            assert app.state.video_prepared_pages[job_ids[1]] is bound_pages["并行任务1"]
-            assert bound_pages["并行任务0"] is not bound_pages["并行任务1"]
             release_first.set()
 
             for _ in range(100):
@@ -272,6 +270,10 @@ def test_same_account_jobs_run_concurrently_on_dedicated_pages(tmp_path, monkeyp
                     break
                 await asyncio.sleep(0.01)
             assert states[0] == "downloaded"
+            await asyncio.wait_for(second_started.wait(), timeout=1)
+            assert calls == ["并行任务0", "并行任务1"]
+            assert app.state.video_prepared_pages[job_ids[1]] is bound_pages["并行任务1"]
+            assert bound_pages["并行任务0"] is not bound_pages["并行任务1"]
             for _ in range(50):
                 if bound_pages["并行任务0"].closed:
                     break
@@ -288,7 +290,7 @@ def test_same_account_jobs_run_concurrently_on_dedicated_pages(tmp_path, monkeyp
                     break
                 await asyncio.sleep(0.01)
             assert states == ["downloaded", "downloaded"]
-            assert maximum_active == 2
+            assert maximum_active == 1
             assert browser_calls == ["account_1", "account_1"]
             for _ in range(50):
                 if close_calls:

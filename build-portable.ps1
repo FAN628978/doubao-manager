@@ -44,6 +44,10 @@ try {
         throw "PyInstaller failed with exit code $LASTEXITCODE."
     }
 
+    # Keep the managed Chrome runtime and its unpacked extension beside the executable.
+    Copy-Item -LiteralPath (Join-Path $projectDir "browser") `
+        -Destination $packageDir -Recurse -Force
+
     # The release ZIP contains an empty data directory. Existing private account data
     # is restored only to the local portable folder after compression.
     New-Item -ItemType Directory -Path $packageDataDir -Force | Out-Null
@@ -55,7 +59,7 @@ Doubao Account Desk Portable
 3. Keep the command window open. Close it or press Ctrl+C to stop the program.
 4. Account sessions, the database, and downloaded videos are stored in the data folder.
 5. To upgrade, extract the new ZIP to a new folder, close the old program, then copy the entire old data folder into the new extracted folder and replace its empty data folder.
-6. This package supports 64-bit Windows 10/11 and requires Google Chrome.
+6. This package supports 64-bit Windows 10/11 and includes its managed Chrome runtime.
 
 The data folder contains private account data. Do not share a used data folder.
 All persisted file paths are relative to this executable and confined to its data folder.

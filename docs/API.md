@@ -84,7 +84,7 @@ Content-Type: multipart/form-data
 | `mode` | string | 可选 | `text2video` | 生成模式，见下方枚举 |
 | `ratio` | string | 可选 | `16:9` | 画幅，以豆包实际选项为准（常见 `16:9` / `9:16` / `1:1`） |
 | `duration` | int | 可选 | `4` | 秒数，以豆包实际选项为准（常见 `4` / `10` / `15`） |
-| `model` | string | 可选 | 豆包默认 | 视频生成模型，见下方模型表 |
+| `model` | string | 可选 | 忽略 | 兼容字段，不参与最终模型选择；最终按本机“任务设置”中的会员/非会员模型执行 |
 | `project_name` | string | 可选 | 空 | 项目名称，≤120 字 |
 | `episode_name` | string | 可选 | 空 | 集数名称，≤120 字 |
 | `shot_name` | string | 可选 | 空 | 镜头名称，≤120 字 |
@@ -110,7 +110,7 @@ Content-Type: multipart/form-data
 - 大小：≤ 15 MB
 - 尺寸：128～8192 像素（宽和高都满足）
 
-### 3.4 模型（model）可选值
+### 3.4 本机模型设置
 
 | model 值 | 说明 |
 | --- | --- |
@@ -119,9 +119,7 @@ Content-Type: multipart/form-data
 | `Seedance 2.0 Fast` | 快速出片 |
 | `Seedance 2.0 Mini` | 日常生成（默认） |
 
-> 不传 `model` 时使用豆包当前默认模型。传了豆包没有的模型名会返回错误 `MODEL_NOT_FOUND`，不会乱选。
-
-> 若任务使用的账号在管理台标记为会员账号，后端会忽略请求中的 `model`，固定使用 `Seedance 2.0`。`account_id` 留空时，任务以“待分配账号”进入待处理；真正进入处理前才挑选账号，此时会在空闲和额度条件满足后优先选择优先级数值更高的账号。
+> 最终模型只读取本机“任务设置”：会员账号和非会员账号可分别配置。请求中的 `model` 参数始终忽略；账号在进入处理前确定后，系统按账号会员状态写入并选择模型。默认值为会员 `Seedance 2.0`、非会员 `Seedance 2.0 Mini`。
 
 ### 3.5 响应（HTTP 202）
 
@@ -164,6 +162,7 @@ H3/外部系统 POST 建单（模式由本地设置）        → status=queued�
 - **人工判定失败是最终裁决**：`/mark-failed` 把任务置为 `failed`、错误码 `MANUAL_CONFIRMED_FAILED`，并释放额度占用；H3 收到该错误码后显示失败、停止等待。判定后仍可 `/resend`，但 H3 需要手动召回才会恢复轮询。
 - `manual` 任务的 `needs_review` / 普通 `failed` 在 H3 侧映射为 `processing`（最长 7 天），等待本机操作者重新发送或关联下载；只有 `MANUAL_CONFIRMED_FAILED` 才按失败处理。自动任务仍按失败处理。H3 始终轮询原 `job_id`，最终从同一个任务取回视频。
 - 本地“正在处理队列上限”只统计机器正在执行的任务（`opening` 到 `downloading`）；`awaiting_manual_send` 与 `needs_review` 不占该名额，只占账号页面和额度。这样异常/人工任务积压不会阻塞后续自动任务。
+- 同一账号只有一个执行通道：后续任务必须等待当前任务释放账号占用后才能进入执行；不同账号仍可在全局“正在处理队列上限”内并行。
 - `/start` 完成后状态进入 `awaiting_manual_send`，`web_page_url` 可能还是首页或 `/chat/local_*`（因为还没发消息）。页面句柄保留在服务进程内，**请保持 Chrome 窗口和服务运行**；服务重启会把该状态转为 `needs_review`（错误码 `MANUAL_SEND_INTERRUPTED`）并保留额度占用。
 - 出片后调用 `/recall`。它会优先复用准备时的标签页；发送后标签页 URL 会转成真实 `/chat/<id>` 并被记录，之后即使页面关闭也可按会话召回。`recall` 只下载已有结果，**绝不重新提交生成**。
 - 管理台“下载视频”使用 `/recall?force_redownload=true`；即使任务已经归档，也会重新从任务页面定位并下载结果、成功后覆盖旧文件。重新下载不会改变任务状态，仍保持 `downloaded`；进度可通过 `GET /api/jobs` 的 `recall_state=recalling` 观察。重新下载失败时保留原归档文件和 `downloaded` 状态。
@@ -233,7 +232,7 @@ POST /api/v1/videos/generations/{job_id}/recall
 | --- | --- | --- |
 | GET | `/api/v1/extension/tasks/resolve?binding_token=...` | 用标签页中的随机绑定令牌解析唯一任务，返回任务信息、最近事件、五个按钮状态及人工接管状态；未知令牌返回 404，不按 URL/标题猜测 |
 | POST | `/api/v1/videos/generations/{id}/takeover` | 人工接管当前任务；取消该任务的自动网页协程并保留页面和进度 |
-| POST | `/api/v1/videos/generations/{id}/resume-takeover` | 安全恢复：提交前恢复自动准备，已提交阶段只召回原结果，提交结果不明确时返回 409 |
+| POST | `/api/v1/videos/generations/{id}/resume-takeover` | 结束人工接管并统一恢复为 `generating`；复用原绑定页面等待原结果，不重新提交，完成后继续自动下载归档和回推 |
 
 五个流程按钮继续调用既有接口：`/dispatch` 或 `/prepare-manual`、`/send?confirm_send=true`、`/send-confirmation?confirm_send=true`、`/recall?force_redownload=true`、`/push-result`。扩展不维护第二套任务状态机。
 
@@ -320,12 +319,12 @@ GET /api/v1/videos/{job_id}/video
 ### 7.1 curl
 
 ```bash
-# ① 提交：参考生视频，2 张图，15 秒，指定模型
+# ① 提交：参考生视频，2 张图，15 秒（模型由本机任务设置决定）
 curl -X POST http://127.0.0.1:8765/api/v1/videos \
   -F "account_id=acc_9b661e5a38" \
   -F "prompt=@图1 的红色纸船作为主体，@图2 的蓝色方块作为湖面背景，缓缓漂动" \
   -F "mode=reference_images" \
-  -F "ratio=16:9" -F "duration=15" -F "model=Seedance 2.0 Fast" \
+  -F "ratio=16:9" -F "duration=15" \
   -F "project_name=大妖也得为我打工" -F "episode_name=第一集" -F "shot_name=苏小棠抬头" \
   -F "reference=@D:/images/角色.png" \
   -F "reference=@D:/images/场景.png"

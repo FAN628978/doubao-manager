@@ -52,7 +52,9 @@ CONFIRM_LABELS = ("现在生成", "确认生成", "直接生成", "确认")
 CONFIRM_ANSWER = ("以上严格执行我的要求，不许乱换模型，好好给我出视频，"
                   "不然就投诉你，请使用 Seedance 2.0 模型")
 MODES = {"text2video": "文生视频", "image2video": "首帧图生视频", "first_last_frame": "首尾帧生视频", "reference_images": "参考生视频"}
+VIDEO_MODELS = ("Seedance 2.5", "Seedance 2.0", "Seedance 2.0 Fast", "Seedance 2.0 Mini")
 MEMBER_MODEL = "Seedance 2.0"
+NON_MEMBER_MODEL = "Seedance 2.0 Mini"
 MAX_IMAGE = 15 * 1024 * 1024
 MAX_VIDEO = 600 * 1024 * 1024
 # 每个账号每天的视频生成额度（秒）。按本地日期归零；可用环境变量覆盖，便于灰度或调整额度。

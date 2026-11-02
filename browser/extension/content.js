@@ -13,7 +13,6 @@
 
     let bindingToken = "";
     let resolving = false;
-    let actionRunning = false;
     const send = message => new Promise(resolve => {
       chrome.runtime.sendMessage(message, response => resolve(
         chrome.runtime.lastError ? {ok: false, error: chrome.runtime.lastError.message} : response
@@ -22,7 +21,7 @@
     const sync = async () => {
       const marker = document.querySelector('meta[name="doubao-manager-task-binding"]');
       const token = String(marker?.content || "").trim();
-      if (!token || resolving || actionRunning) return;
+      if (!token || resolving) return;
       bindingToken = token;
       resolving = true;
       try {
@@ -37,8 +36,6 @@
       }
     };
     panel.setActionHandler(async (action, presetId) => {
-      if (actionRunning) return;
-      actionRunning = true;
       try {
         const current = document.querySelector('meta[name="doubao-manager-task-binding"]')?.content || "";
         if (!current || !bindingToken) return;
@@ -51,7 +48,6 @@
           panel.feedback(resolved?.error || definition?.reason || "当前操作不可执行", true);
           return;
         }
-        panel.setBusy(action, true);
         panel.feedback(`正在执行：${definition.label}…`);
         const response = await send({
           type: "task.action", action, jobId: task.job_id, presetId
@@ -63,8 +59,6 @@
       } catch (error) {
         panel.feedback(error.message || String(error), true);
       } finally {
-        panel.setBusy(action, false);
-        actionRunning = false;
         await sync();
       }
     });

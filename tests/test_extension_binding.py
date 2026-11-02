@@ -3,6 +3,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -30,7 +31,7 @@ class BoundPage:
         return self.closed
 
 
-def build_bridge(tmp_path, monkeypatch):
+def build_bridge(tmp_path, monkeypatch, browser_impl=None):
     monkeypatch.delenv("DOUBAO_LOCAL_API_KEY", raising=False)
     monkeypatch.setattr(application, "DB_PATH", tmp_path / "extension.sqlite3")
     application.init_db()
@@ -72,6 +73,8 @@ def build_bridge(tmp_path, monkeypatch):
         )
 
     async def browser(_account_id):
+        if browser_impl is not None:
+            return await browser_impl(_account_id)
         raise AssertionError("绑定解析不应启动浏览器")
 
     bridge = FastAPI()
@@ -152,6 +155,21 @@ def test_extension_panel_actions_do_not_render_confirmation_prompt():
     assert "data-role=\"confirm\"" not in panel
 
 
+def test_extension_panel_actions_are_not_frozen_while_requesting():
+    content = (ROOT / "browser/extension/content.js").read_text(encoding="utf-8")
+    panel = (ROOT / "browser/extension/panel.js").read_text(encoding="utf-8")
+    assert "actionRunning" not in content
+    assert "setBusy" not in content
+    assert "setBusy" not in panel
+
+
+def test_extension_panel_shows_resumed_recall_as_generating():
+    panel = (ROOT / "browser/extension/panel.js").read_text(encoding="utf-8")
+    assert 'task.recall_state === "recalling" && task.status === "downloaded"' in panel
+    assert '正在原任务页面等待生成结果' in panel
+    assert '? "正在下载视频"' not in panel
+
+
 def test_extension_actions_call_existing_task_apis():
     background = (ROOT / "browser/extension/background.js").read_text(encoding="utf-8")
     expected = [
@@ -218,7 +236,10 @@ def test_extension_always_exposes_restart_auto_control(tmp_path, monkeypatch):
 
 
 def test_takeover_and_resume_affect_only_bound_task(tmp_path, monkeypatch):
-    bridge = build_bridge(tmp_path, monkeypatch)
+    async def blocked_browser(_account_id):
+        await asyncio.Event().wait()
+
+    bridge = build_bridge(tmp_path, monkeypatch, browser_impl=blocked_browser)
     page = BoundPage()
     token = asyncio.run(bridge.state.video_bind_task_page("job_0", page))
     asyncio.run(bridge.state.video_bind_task_page("job_1", BoundPage()))
@@ -241,27 +262,52 @@ def test_takeover_and_resume_affect_only_bound_task(tmp_path, monkeypatch):
 
         resumed = client.post("/api/v1/videos/generations/job_0/resume-takeover")
         assert resumed.status_code == 200, resumed.text
-        assert resumed.json()["status"] == "awaiting_manual_send"
+        assert resumed.json()["status"] == "generating"
+        assert resumed.json()["web"]["recall_state"] == "recalling"
         assert resumed.json()["web"]["operator_takeover"] == 0
 
 
-def test_uncertain_submission_cannot_blindly_resume(tmp_path, monkeypatch):
-    bridge = build_bridge(tmp_path, monkeypatch)
+@pytest.mark.parametrize("takeover_status", [
+    "opening", "configuring", "uploading", "submitting",
+    "confirming", "generating", "downloading", "awaiting_manual_send",
+    "needs_review",
+])
+def test_resume_takeover_always_waits_for_original_result(
+    tmp_path, monkeypatch, takeover_status
+):
+    async def blocked_browser(_account_id):
+        await asyncio.Event().wait()
+
+    bridge = build_bridge(tmp_path, monkeypatch, browser_impl=blocked_browser)
+    page = BoundPage()
+    token = asyncio.run(bridge.state.video_bind_task_page("job_0", page))
     with application.db() as connection:
         connection.execute("UPDATE jobs SET status='needs_review' WHERE id='job_0'")
         connection.execute(
-            "UPDATE video_web_jobs SET operator_takeover=1,takeover_status='submitting' "
-            "WHERE job_id='job_0'"
+            "UPDATE video_web_jobs SET operator_takeover=1,takeover_status=? "
+            "WHERE job_id='job_0'",
+            (takeover_status,),
         )
     with TestClient(bridge) as client:
+        resolved = client.get(
+            "/api/v1/extension/tasks/resolve",
+            params={"binding_token": token},
+        ).json()
+        assert resolved["manual_controls"][0]["key"] == "resume_takeover"
+        assert resolved["manual_controls"][0]["enabled"] is True
+
         response = client.post("/api/v1/videos/generations/job_0/resume-takeover")
-        assert response.status_code == 409
-        assert "禁止盲目重新提交" in response.json()["detail"]
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "generating"
+        assert response.json()["web"]["recall_state"] == "recalling"
+        assert response.json()["web"]["operator_takeover"] == 0
         with application.db() as connection:
-            row = connection.execute(
-                "SELECT operator_takeover FROM video_web_jobs WHERE job_id='job_0'"
+            event = connection.execute(
+                "SELECT status,message FROM video_web_events WHERE job_id='job_0' "
+                "ORDER BY id DESC LIMIT 1"
             ).fetchone()
-        assert row["operator_takeover"] == 1
+        assert event["status"] == "generating"
+        assert "继续等待原结果" in event["message"]
 
 
 def test_takeover_cancels_only_current_running_worker(tmp_path, monkeypatch):

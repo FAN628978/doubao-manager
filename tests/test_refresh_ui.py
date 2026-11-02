@@ -88,6 +88,9 @@ class Server:
         self.auto_dispatch_updates = []
         self.submit_mode = "auto"
         self.submit_mode_updates = []
+        self.member_video_model = "Seedance 2.0"
+        self.non_member_video_model = "Seedance 2.0 Mini"
+        self.video_model_updates = []
         self.ignore_quota_check = False
         self.ignore_quota_updates = []
         self.claude_recovery_enabled = False
@@ -164,6 +167,27 @@ class Server:
                 content_type="application/json",
                 body=_json({
                     "auto_dispatch_enabled": self.auto_dispatch_enabled,
+                }),
+            )
+        elif url.endswith("/api/settings/video-models"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.member_video_model = body.get("member_model")
+                self.non_member_video_model = body.get("non_member_model")
+                self.video_model_updates.append((
+                    self.member_video_model,
+                    self.non_member_video_model,
+                ))
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json({
+                    "member_model": self.member_video_model,
+                    "non_member_model": self.non_member_video_model,
+                    "available_models": [
+                        "Seedance 2.5", "Seedance 2.0",
+                        "Seedance 2.0 Fast", "Seedance 2.0 Mini",
+                    ],
                 }),
             )
         elif url.endswith("/api/settings/processing-limit"):
@@ -451,6 +475,32 @@ def test_takeover_task_enables_all_five_process_buttons():
     asyncio.run(run())
 
 
+def test_resumed_takeover_displays_generating_not_downloading():
+    async def run():
+        server = Server()
+        server.jobs = [_job(
+            "job_resumed",
+            status="generating",
+            recall_state="recalling",
+        )]
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate(
+                    "() => {switchView('jobs');setJobSection('processing')}"
+                )
+                row = page.locator("#jobsTable tr[data-job-id='job_resumed']")
+                text = await row.inner_text()
+                assert "生成中" in text
+                assert "等待原结果" in text
+                assert "重新下载中" not in text
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
 def test_row_signature_covers_every_rendered_field():
     """行签名必须覆盖所有会显示在行里的字段，否则静默刷新会漏更新。"""
     import re
@@ -518,6 +568,17 @@ def test_search_focus_does_not_freeze_auto_refresh_source():
     body = source[start:source.index("\n  }", start)]
     assert "freezeRefresh" in body
     assert "['INPUT','TEXTAREA','SELECT'].includes(active.tagName))return true" not in body
+
+
+def test_new_task_creation_keeps_current_management_view():
+    source = (STATIC / "app.js").read_text(encoding="utf-8")
+    create_job = source[source.index("async function createJob"):]
+    create_job = create_job[:create_job.index("function syncWebMode")]
+    assert "switchView('jobs')" not in create_job
+
+    web_submit = source[source.index("$('webForm').addEventListener"):]
+    web_submit = web_submit[:web_submit.index("$('accountForm').addEventListener")]
+    assert "switchView('jobs')" not in web_submit
 
 
 def test_silent_refresh_has_visible_failure_state():
@@ -929,10 +990,17 @@ def test_automation_switches_are_saved_independently():
                 await page.evaluate("() => openSubmitModeSettings()")
                 assert await page.is_checked("#autoDispatchSettingToggle")
                 assert await page.is_checked("#autoExecutionSettingToggle")
+                assert await page.inner_text("#dispatchFlowState") == "自动进入调度"
+                assert await page.inner_text("#executionFlowState") == "自动执行完整流程"
+                assert await page.input_value("#memberModelSetting") == "Seedance 2.0"
+                assert await page.input_value("#nonMemberModelSetting") == "Seedance 2.0 Mini"
 
                 await page.click("#autoDispatchSettingToggle")
+                await page.select_option("#memberModelSetting", "Seedance 2.0 Fast")
+                await page.select_option("#nonMemberModelSetting", "Seedance 2.5")
                 assert not await page.is_checked("#autoDispatchSettingToggle")
                 assert await page.is_checked("#autoExecutionSettingToggle")
+                assert await page.inner_text("#dispatchFlowState") == "等待手动放行"
                 await page.evaluate("() => $('submitModeForm').requestSubmit()")
                 await page.wait_for_function(
                     "() => !document.getElementById('submitModeModal').classList.contains('show')"
@@ -940,10 +1008,43 @@ def test_automation_switches_are_saved_independently():
 
                 assert server.auto_dispatch_updates == [False]
                 assert server.submit_mode_updates == ["auto"]
+                assert server.video_model_updates == [
+                    ("Seedance 2.0 Fast", "Seedance 2.5")
+                ]
                 assert await page.evaluate(
                     "() => state.autoDispatchEnabled"
                 ) is False
                 assert await page.evaluate("() => state.submitMode") == "auto"
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_task_settings_modal_body_scrolls_on_short_viewport():
+    async def run():
+        server = Server()
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.set_viewport_size({"width": 1000, "height": 560})
+                await page.evaluate("() => openSubmitModeSettings()")
+                dimensions = await page.locator(
+                    "#submitModeModal .task-settings-body"
+                ).evaluate(
+                    "el => ({clientHeight: el.clientHeight, scrollHeight: el.scrollHeight})"
+                )
+                assert dimensions["scrollHeight"] > dimensions["clientHeight"]
+                await page.locator(
+                    "#submitModeModal .task-settings-body"
+                ).evaluate("el => { el.scrollTop = el.scrollHeight; }")
+                assert await page.locator(
+                    "#submitModeModal .task-settings-body"
+                ).evaluate("el => el.scrollTop") > 0
+                assert await page.locator(
+                    "#submitModeModal .modal-foot"
+                ).is_visible()
             finally:
                 await browser.close()
 

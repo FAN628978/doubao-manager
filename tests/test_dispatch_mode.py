@@ -381,7 +381,7 @@ def test_dispatch_button_shows_waiting_state():
     body = source[source.index("function fixedJobActions"):]
     body = body[:body.index("\n  function filteredJobs")]
     assert "'⏳ 已放行 · 排队中'" in source
-    assert "disabled:recovering||!canPrepare||dispatched" in body
+    assert "disabled:!takeover&&(recovering||!canPrepare||dispatched)" in body
     assert "已交给调度器，正在等处理名额或可用账号" in source
 
 
