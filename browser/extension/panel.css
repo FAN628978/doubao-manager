@@ -15,6 +15,14 @@ footer.is-error { color: #fb7185; }
 .db-task-meta .wide { grid-column: 1 / -1; } dt { color: #64748b; font-size: 10px; } dd { overflow: hidden; margin: 2px 0 0; color: #dbe3ef; text-overflow: ellipsis; white-space: nowrap; }
 .db-task-error { display: grid; gap: 3px; margin-top: 10px; padding: 9px; border: 1px solid rgba(244,63,94,.22); border-radius: 8px; background: rgba(244,63,94,.08); }
 .db-task-error b { color: #fb7185; font-size: 11px; } .db-task-error span { color: #fecdd3; }
+.db-task-actions { display: grid; gap: 7px; margin-top: 11px; }
+.db-task-actions>button { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 35px; padding: 7px 10px; border: 1px solid rgba(99,102,241,.16); border-radius: 8px; color: #e2e8f0; background: rgba(99,102,241,.1); text-align: left; }
+.db-task-actions>button:hover:not(:disabled) { border-color: rgba(129,140,248,.5); background: rgba(99,102,241,.2); }
+.db-task-actions>button:disabled { cursor: not-allowed; opacity: .38; }
+.db-task-actions>button i { display: grid; place-items: center; width: 21px; height: 21px; border-radius: 6px; color: #c7d2fe; background: rgba(99,102,241,.2); font-style: normal; font-size: 10px; }
+.db-task-actions>button.is-loading span::after { content: " …"; color: #a5b4fc; }
+.db-confirm-preset { display: grid; gap: 4px; padding: 2px 0; color: #64748b; font-size: 10px; }
+.db-confirm-preset select { width: 100%; min-width: 0; padding: 7px; border: 1px solid rgba(148,163,184,.16); border-radius: 7px; outline: none; color: #cbd5e1; background: #171d29; font: inherit; }
 .db-task-events { margin-top: 10px; color: #94a3b8; } .db-task-events summary { cursor: pointer; font-size: 11px; }
 .db-task-events ul { display: grid; gap: 7px; max-height: 150px; overflow: auto; margin: 8px 0 0; padding: 0; list-style: none; }
 .db-task-events li { display: grid; gap: 2px; padding-left: 8px; border-left: 2px solid rgba(99,102,241,.35); }

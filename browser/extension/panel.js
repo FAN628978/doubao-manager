@@ -13,6 +13,7 @@
   }
 
   function createPanel(host) {
+    let actionHandler = null;
     const shadow = host.attachShadow({mode: "open"});
     const style = document.createElement("link");
     style.rel = "stylesheet";
@@ -47,8 +48,21 @@
       collapse.textContent = root.classList.contains("is-collapsed") ? "+" : "−";
       chrome.storage.local.set({panelCollapsed: root.classList.contains("is-collapsed")});
     });
+    root.addEventListener("click", event => {
+      const button = event.target.closest("[data-task-action]");
+      if (!button || button.disabled || !actionHandler) return;
+      const preset = root.querySelector('[data-role="confirmation-preset"]');
+      actionHandler(button.dataset.taskAction, preset?.value || "", button);
+    });
     return {
       root,
+      setActionHandler(handler) { actionHandler = handler; },
+      setBusy(action, busy) {
+        root.querySelectorAll("[data-task-action]").forEach(button => {
+          button.disabled = busy || button.dataset.baseDisabled === "true";
+          button.classList.toggle("is-loading", busy && button.dataset.taskAction === action);
+        });
+      },
       renderWaiting(message) {
         root.classList.remove("is-loading");
         root.querySelector('[data-role="status"]').textContent = "未绑定任务";
@@ -59,6 +73,14 @@
         root.querySelector('[data-role="status"]').textContent = stateLabels[task.status] || task.status;
         const mode = task.submit_mode === "manual" ? "人工发送" : "自动执行";
         const error = task.error_message || task.error_code;
+        const presets = (task.confirmation_presets || []).map(preset =>
+          `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)} · ${escapeHtml(preset.text)}</option>`
+        ).join("");
+        const actions = (task.actions || []).map((action, index) => `
+          <button type="button" data-task-action="${escapeHtml(action.key)}" data-base-disabled="${!action.enabled}"
+            ${action.enabled ? "" : "disabled"} title="${escapeHtml(action.enabled ? action.confirm : action.reason)}">
+            <i>${index + 1}</i><span>${escapeHtml(action.label)}</span>
+          </button>`).join("");
         const events = (task.events || []).slice(-5).reverse().map(event => `
           <li><time>${escapeHtml(formatTime(event.timestamp))}</time><span>${escapeHtml(event.message)}</span></li>`).join("");
         root.querySelector('[data-role="content"]').innerHTML = `
@@ -73,7 +95,10 @@
             <div><dt>最近操作</dt><dd>${escapeHtml(formatTime(task.last_action_at))}</dd></div>
           </dl>
           ${error ? `<div class="db-task-error"><b>当前异常</b><span>${escapeHtml(error)}</span></div>` : ""}
-          <section class="db-task-actions" data-role="actions"></section>
+          <section class="db-task-actions" data-role="actions">
+            ${actions}
+            <label class="db-confirm-preset"><span>确认语预设</span><select data-role="confirmation-preset">${presets}</select></label>
+          </section>
           <details class="db-task-events" ${error ? "open" : ""}><summary>最近操作记录</summary><ul>${events || "<li><span>暂无操作记录</span></li>"}</ul></details>`;
         this.feedback(task.last_action || "任务状态已同步");
       },

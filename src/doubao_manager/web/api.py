@@ -1678,6 +1678,75 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         with db() as c:
             return [dict(r) for r in c.execute("SELECT status,message,timestamp FROM video_web_events WHERE job_id=? ORDER BY id",(jobid,))]
 
+    def extension_task_actions(item: dict) -> list[dict]:
+        status = item.get("status") or ""
+        web = item["web"]
+        recovering = bool((item.get("recovery") or {}).get("active"))
+        live_page = prepared_pages.get(item["id"])
+        try:
+            has_live_page = live_page is not None and not live_page.is_closed()
+        except Exception:
+            has_live_page = False
+        has_page = bool(
+            has_live_page
+            or web.get("session_url")
+            or web.get("web_page_url")
+        )
+        pending_status = status in ("queued", "ready")
+        dispatched = pending_status and bool(web.get("dispatched_at"))
+        can_prepare = status in (
+            "queued", MANUAL_WAIT, "confirming", "generating", "needs_review", "failed"
+        )
+        first_key = "dispatch" if pending_status else "prepare"
+        first_label = (
+            "已放行 · 排队中" if dispatched
+            else "进入调度" if pending_status
+            else "提交素材"
+        )
+        busy_reason = "Claude 正在处理该任务，请等待恢复结束"
+        return [
+            {
+                "key": first_key,
+                "label": first_label,
+                "enabled": not recovering and can_prepare and not dispatched,
+                "reason": busy_reason if recovering else (
+                    "任务已进入调度，无需重复点击" if dispatched else "当前状态不能提交素材"
+                ),
+                "confirm": "确认把当前任务交给调度器自动执行？" if pending_status
+                else "确认按当前任务进度重新准备素材与提示词？",
+            },
+            {
+                "key": "send",
+                "label": "确认发送",
+                "enabled": not recovering and status == MANUAL_WAIT and has_page,
+                "reason": busy_reason if recovering else "仅已准备完成的任务可以确认发送",
+                "confirm": "确认发送当前任务已经准备好的素材与提示词？",
+            },
+            {
+                "key": "confirm",
+                "label": "发送确认语",
+                "enabled": not recovering and status in (MANUAL_WAIT, "confirming", "needs_review") and has_page,
+                "reason": busy_reason if recovering else "当前状态不能发送确认语",
+                "confirm": "确认向当前任务网页发送所选确认语？此操作可能继续视频生成。",
+            },
+            {
+                "key": "download",
+                "label": "下载视频",
+                "enabled": not recovering and status in (
+                    "downloaded", "needs_review", "failed", MANUAL_WAIT, "confirming", "generating"
+                ) and has_page,
+                "reason": busy_reason if recovering else "当前任务还没有可关联的任务网页",
+                "confirm": "确认从当前任务绑定的网页核验并下载视频？系统不会重新提交生成。",
+            },
+            {
+                "key": "push",
+                "label": "再次推送服务器" if web.get("result_pushed_at") else "推送服务器",
+                "enabled": not recovering and bool(item.get("video_path")) and bool(web.get("result_push_url")),
+                "reason": busy_reason if recovering else "需要已归档视频和服务器推送配置",
+                "confirm": "确认把当前任务已归档的视频推送到服务器？",
+            },
+        ]
+
     @app.get("/api/v1/extension/tasks/resolve", tags=["Chrome Extension"])
     async def resolve_extension_task(
         binding_token: str, x_api_key: Optional[str] = Header(None)
@@ -1725,6 +1794,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "last_action": last_event.get("message") or "",
             "recovery": item.get("recovery") or {},
             "events": events_out,
+            "actions": extension_task_actions(item),
+            "confirmation_presets": confirmation_presets(),
         }
 
     @app.post("/api/v1/videos/generations/{jobid}/start",tags=["Doubao Web Video"])

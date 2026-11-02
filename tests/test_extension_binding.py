@@ -101,6 +101,11 @@ def test_explicit_tab_tokens_resolve_distinct_tasks(tmp_path, monkeypatch):
         assert resolved_second.json()["job_id"] == "job_1"
         assert resolved_first.json()["account_name"] == "扩展账号"
         assert resolved_first.json()["last_action"] == "任务 0 已准备"
+        actions = resolved_first.json()["actions"]
+        assert [action["label"] for action in actions] == [
+            "提交素材", "确认发送", "发送确认语", "下载视频", "推送服务器"
+        ]
+        assert [action["enabled"] for action in actions] == [True, True, True, True, False]
         generation = client.get("/api/v1/videos/generations/job_0").json()
         assert "extension_binding_token" not in generation["web"]
 
@@ -121,3 +126,15 @@ def test_content_script_uses_only_explicit_binding_marker():
     assert 'meta[name="doubao-manager-task-binding"]' in content
     assert "document.title" not in content
     assert "location.href" not in content
+
+
+def test_extension_actions_call_existing_task_apis():
+    background = (ROOT / "browser/extension/background.js").read_text(encoding="utf-8")
+    expected = [
+        "/dispatch", "/prepare-manual", "/send?confirm_send=true",
+        "/send-confirmation?confirm_send=true", "/recall?force_redownload=true",
+        "/push-result",
+    ]
+    for endpoint in expected:
+        assert endpoint in background
+    assert "taskActions[message.action]" in background

@@ -35,6 +35,33 @@
         resolving = false;
       }
     };
+    panel.setActionHandler(async (action, presetId) => {
+      const current = document.querySelector('meta[name="doubao-manager-task-binding"]')?.content || "";
+      if (!current || !bindingToken) return;
+      const resolved = await send({type: "task.resolve", bindingToken});
+      const task = resolved?.data;
+      const definition = task?.actions?.find(item => item.key === action);
+      if (!resolved?.ok || !task || !definition?.enabled) {
+        panel.feedback(resolved?.error || definition?.reason || "当前操作不可执行", true);
+        await sync();
+        return;
+      }
+      if (definition.confirm && !confirm(definition.confirm)) return;
+      panel.setBusy(action, true);
+      panel.feedback(`正在执行：${definition.label}…`);
+      try {
+        const response = await send({
+          type: "task.action", action, jobId: task.job_id, presetId
+        });
+        if (!response?.ok) throw new Error(response?.error || "操作失败");
+        panel.feedback(`${definition.label}操作成功`);
+      } catch (error) {
+        panel.feedback(error.message || String(error), true);
+      } finally {
+        panel.setBusy(action, false);
+        await sync();
+      }
+    });
     new MutationObserver(sync).observe(document.documentElement, {childList: true, subtree: true});
     sync();
     setInterval(sync, 3000);

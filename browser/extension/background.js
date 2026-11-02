@@ -1,5 +1,19 @@
 import {localApi, updateSettings} from "./api.js";
 
+const taskActions = {
+  dispatch: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/dispatch`, {method: "POST"}),
+  prepare: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/prepare-manual`, {method: "POST"}),
+  send: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/send?confirm_send=true`, {method: "POST"}),
+  confirm: (jobId, message) => {
+    if (!message.presetId) throw new Error("请选择确认语预设");
+    return localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/send-confirmation?confirm_send=true`, {
+      method: "POST", body: JSON.stringify({preset_id: message.presetId})
+    });
+  },
+  download: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/recall?force_redownload=true`, {method: "POST"}),
+  push: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/push-result`, {method: "POST"})
+};
+
 const handlers = {
   async "settings.get"() {
     const value = await chrome.storage.local.get(["apiBase", "apiKey"]);
@@ -11,6 +25,12 @@ const handlers = {
   },
   async "task.resolve"(message) {
     return localApi(`/api/v1/extension/tasks/resolve?binding_token=${encodeURIComponent(message.bindingToken || "")}`);
+  },
+  async "task.action"(message) {
+    const action = taskActions[message.action];
+    const jobId = String(message.jobId || "").trim();
+    if (!action || !jobId) throw new Error("未知任务操作");
+    return action(jobId, message);
   }
 };
 
