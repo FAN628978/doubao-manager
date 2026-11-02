@@ -62,7 +62,8 @@ def ensure_schema(db) -> None:
                 delivery_next_retry_at TEXT DEFAULT '',
                 delivery_error TEXT DEFAULT '',
                 archived_at TEXT DEFAULT '',
-                avoid_account_id TEXT DEFAULT ''
+                avoid_account_id TEXT DEFAULT '',
+                extension_binding_token TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS video_web_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -156,10 +157,17 @@ def ensure_schema(db) -> None:
             # 交给调度器的时刻：排队任务在拿到名额前状态仍是 queued，靠它区分
             # “还没人工放行”和“已放行、正在等名额/账号”（见 start_worker）。
             ("dispatched_at", "TEXT DEFAULT ''"),
+            # Opaque identity injected into the exact task tab for the Chrome extension.
+            ("extension_binding_token", "TEXT DEFAULT ''"),
         )
         for name, ddl in migrations:
             if name not in columns:
                 c.execute(f"ALTER TABLE video_web_jobs ADD COLUMN {name} {ddl}")
+        c.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_video_extension_binding "
+            "ON video_web_jobs(extension_binding_token) "
+            "WHERE extension_binding_token!=''"
+        )
 
         # Backfill historical jobs. session_url is only populated from a recognizable
         # chat URL; unsupported generic pages are left untouched for explicit review.

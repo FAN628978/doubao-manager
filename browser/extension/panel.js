@@ -31,11 +31,21 @@
       </section>`;
     shadow.appendChild(root);
     const collapse = root.querySelector('[data-action="collapse"]');
-    root.querySelector('[data-action="close"]').addEventListener("click", () => root.classList.add("is-closed"));
-    root.querySelector(".db-panel-opener").addEventListener("click", () => root.classList.remove("is-closed"));
+    chrome.storage.local.get(["panelClosed", "panelCollapsed"]).then(value => {
+      root.classList.toggle("is-closed", Boolean(value.panelClosed));
+      root.classList.toggle("is-collapsed", Boolean(value.panelCollapsed));
+      collapse.textContent = value.panelCollapsed ? "+" : "−";
+    });
+    root.querySelector('[data-action="close"]').addEventListener("click", () => {
+      root.classList.add("is-closed"); chrome.storage.local.set({panelClosed: true});
+    });
+    root.querySelector(".db-panel-opener").addEventListener("click", () => {
+      root.classList.remove("is-closed"); chrome.storage.local.set({panelClosed: false});
+    });
     collapse.addEventListener("click", () => {
       root.classList.toggle("is-collapsed");
       collapse.textContent = root.classList.contains("is-collapsed") ? "+" : "−";
+      chrome.storage.local.set({panelCollapsed: root.classList.contains("is-collapsed")});
     });
     return {
       root,
@@ -47,7 +57,25 @@
       renderTask(task) {
         root.classList.remove("is-loading");
         root.querySelector('[data-role="status"]').textContent = stateLabels[task.status] || task.status;
-        root.querySelector('[data-role="content"]').innerHTML = `<div class="db-panel-empty">已绑定任务<br><b>${escapeHtml(task.task_name || task.job_id)}</b></div>`;
+        const mode = task.submit_mode === "manual" ? "人工发送" : "自动执行";
+        const error = task.error_message || task.error_code;
+        const events = (task.events || []).slice(-5).reverse().map(event => `
+          <li><time>${escapeHtml(formatTime(event.timestamp))}</time><span>${escapeHtml(event.message)}</span></li>`).join("");
+        root.querySelector('[data-role="content"]').innerHTML = `
+          <div class="db-task-title"><b>${escapeHtml(task.task_name || task.shot_id || task.job_id)}</b><span>${escapeHtml(mode)}</span></div>
+          <dl class="db-task-meta">
+            <div><dt>账号</dt><dd>${escapeHtml(task.account_name || task.account_id || "待分配")}</dd></div>
+            <div><dt>项目</dt><dd>${escapeHtml(task.project_id || "—")}</dd></div>
+            <div><dt>集数</dt><dd>${escapeHtml(task.episode_id || "—")}</dd></div>
+            <div><dt>分镜</dt><dd>${escapeHtml(task.shot_id || "—")}</dd></div>
+            <div class="wide"><dt>任务 ID</dt><dd title="${escapeHtml(task.job_id)}">${escapeHtml(task.job_id)}</dd></div>
+            <div><dt>状态</dt><dd>${escapeHtml(stateLabels[task.status] || task.status)}</dd></div>
+            <div><dt>最近操作</dt><dd>${escapeHtml(formatTime(task.last_action_at))}</dd></div>
+          </dl>
+          ${error ? `<div class="db-task-error"><b>当前异常</b><span>${escapeHtml(error)}</span></div>` : ""}
+          <section class="db-task-actions" data-role="actions"></section>
+          <details class="db-task-events" ${error ? "open" : ""}><summary>最近操作记录</summary><ul>${events || "<li><span>暂无操作记录</span></li>"}</ul></details>`;
+        this.feedback(task.last_action || "任务状态已同步");
       },
       feedback(message, failed = false) {
         const footer = root.querySelector('[data-role="feedback"]');
@@ -57,5 +85,11 @@
     };
   }
 
-  globalThis.DoubaoTaskPanel = {createPanel, escapeHtml, stateLabels};
+  function formatTime(value) {
+    if (!value) return "—";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", {hour12: false});
+  }
+
+  globalThis.DoubaoTaskPanel = {createPanel, escapeHtml, stateLabels, formatTime};
 })();

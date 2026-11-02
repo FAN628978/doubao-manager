@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
@@ -186,6 +187,58 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         idle_close_tasks[account_id] = asyncio.create_task(
             close_account_after_idle(account_id, jobid)
         )
+
+    def task_binding_token(jobid: str) -> str:
+        ensure_web_schema(db)
+        with db() as c:
+            row = c.execute(
+                "SELECT extension_binding_token FROM video_web_jobs WHERE job_id=?",
+                (jobid,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "不是网页视频任务")
+            token = (row["extension_binding_token"] or "").strip()
+            if not token:
+                token = secrets.token_urlsafe(32)
+                c.execute(
+                    "UPDATE video_web_jobs SET extension_binding_token=? WHERE job_id=?",
+                    (token, jobid),
+                )
+        return token
+
+    async def bind_task_page(jobid: str, page) -> str:
+        """Persist and inject an opaque task identity into one exact browser tab."""
+        token = task_binding_token(jobid)
+        encoded = json.dumps(token)
+        script = f"""
+            (() => {{
+              const token = {encoded};
+              const attach = () => {{
+                if (!document.documentElement) return;
+                let marker = document.querySelector('meta[name="doubao-manager-task-binding"]');
+                if (!marker) {{
+                  marker = document.createElement('meta');
+                  marker.name = 'doubao-manager-task-binding';
+                  document.documentElement.appendChild(marker);
+                }}
+                marker.content = token;
+              }};
+              attach();
+              document.addEventListener('DOMContentLoaded', attach, {{once: true}});
+            }})();
+        """
+        try:
+            await page.add_init_script(script)
+        except Exception:
+            pass
+        try:
+            await page.evaluate(script)
+        except Exception:
+            pass
+        prepared_pages[jobid] = page
+        return token
+
+    app.state.video_bind_task_page = bind_task_page
 
     async def cleanup_downloaded_browser(
         jobid: str, account_id: str | None, page=None
@@ -628,6 +681,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         val["archived"] = bool(val["web"]["archived_at"])
         val["web"].pop("recall_token", None)
         val["web"].pop("result_push_token", None)
+        val["web"].pop("extension_binding_token", None)
         val["task_name"] = val["web"].get("task_name") or ""
         val["video_file_url"] = f"/api/jobs/{jobid}/video" if row["video_path"] else None
         status_for_job = getattr(recovery_service, "status_for_job", None)
@@ -1056,7 +1110,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                         )
 
                 async def manual_ready(page, state):
-                    prepared_pages[jobid] = page
+                    await bind_task_page(jobid, page)
                     url, session_id = session_binding(state.get("url") or "")
                     with db() as c:
                         c.execute(
@@ -1073,7 +1127,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     )
 
                 async def task_page(page):
-                    prepared_pages[jobid] = page
+                    await bind_task_page(jobid, page)
 
                 result = await perform(
                     ctx, req, assets, target, status, page_url, binding,
@@ -1624,6 +1678,55 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         with db() as c:
             return [dict(r) for r in c.execute("SELECT status,message,timestamp FROM video_web_events WHERE job_id=? ORDER BY id",(jobid,))]
 
+    @app.get("/api/v1/extension/tasks/resolve", tags=["Chrome Extension"])
+    async def resolve_extension_task(
+        binding_token: str, x_api_key: Optional[str] = Header(None)
+    ):
+        """Resolve only an explicit tab binding; never infer a task from URL or title."""
+        auth(x_api_key); ensure_schema()
+        token = binding_token.strip()
+        if len(token) < 32 or len(token) > 200:
+            raise HTTPException(404, "当前网页没有有效的任务绑定")
+        with db() as c:
+            row = c.execute(
+                "SELECT job_id FROM video_web_jobs WHERE extension_binding_token=?",
+                (token,),
+            ).fetchone()
+            if not row:
+                raise HTTPException(404, "当前网页没有绑定分镜任务")
+            recent = c.execute(
+                "SELECT status,message,timestamp FROM video_web_events "
+                "WHERE job_id=? ORDER BY id DESC LIMIT 10",
+                (row["job_id"],),
+            ).fetchall()
+        item = detail(row["job_id"])
+        account_name = ""
+        if item.get("account_id"):
+            try:
+                account_name = account_label(item["account_id"])
+            except Exception:
+                account_name = item["account_id"]
+        events_out = [dict(event) for event in reversed(recent)]
+        last_event = events_out[-1] if events_out else {}
+        return {
+            "job_id": item["id"],
+            "account_id": item.get("account_id") or "",
+            "account_name": account_name,
+            "project_id": item.get("project_id") or "",
+            "episode_id": item.get("episode_id") or "",
+            "shot_id": item.get("shot_id") or "",
+            "task_name": item.get("task_name") or "",
+            "status": item.get("status") or "",
+            "submit_mode": item["web"].get("submit_mode") or "auto",
+            "error_code": item["web"].get("error_code") or "",
+            "error_message": item.get("error_message") or "",
+            "updated_at": item.get("updated_at") or "",
+            "last_action_at": last_event.get("timestamp") or item.get("updated_at") or "",
+            "last_action": last_event.get("message") or "",
+            "recovery": item.get("recovery") or {},
+            "events": events_out,
+        }
+
     @app.post("/api/v1/videos/generations/{jobid}/start",tags=["Doubao Web Video"])
     async def start(jobid:str,x_api_key:Optional[str]=Header(None)):
         auth(x_api_key); ensure_schema()
@@ -1939,7 +2042,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if jobid in pending: raise HTTPException(409,"任务正在执行")
         ctx = await browser(item["account_id"])
         page = await ctx.new_page()
-        prepared_pages[jobid] = page
+        await bind_task_page(jobid, page)
         await page.goto(url,wait_until="domcontentloaded",timeout=60000)
         await page.wait_for_timeout(1500)
         state = await read_state(page)
@@ -2028,6 +2131,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         # 人工发送任务的标签页可能还没有真实会话 URL，但它本身就是任务页面。
         prepared = prepared_pages.get(jobid)
         if prepared is not None and not prepared.is_closed():
+            await bind_task_page(jobid, prepared)
             await set_job_page_title(prepared, page_title)
             await prepared.bring_to_front()
             return {"ok": True, "job_id": jobid, "url": prepared.url,
@@ -2048,18 +2152,18 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         for existing in ctx.pages:
             try:
                 if (existing.url or "").split("?")[0] == key:
+                    await bind_task_page(jobid, existing)
                     await set_job_page_title(existing, page_title)
                     await existing.bring_to_front()
-                    prepared_pages[jobid] = existing
                     return {"ok": True, "job_id": jobid, "url": url,
                             "reused": True, "message": "已打开该任务绑定的网页"}
             except Exception:
                 continue
         page = await ctx.new_page()
+        await bind_task_page(jobid, page)
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         await set_job_page_title(page, page_title)
         await page.bring_to_front()
-        prepared_pages[jobid] = page
         return {"ok": True, "job_id": jobid, "url": url,
                 "reused": False, "message": "已打开该任务绑定的网页"}
 
@@ -2121,6 +2225,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 page = await ctx.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                 await page.wait_for_timeout(1200)
+
+        await bind_task_page(jobid, page)
 
         page_title = concise_job_title(
             item.get("project_id", ""),
@@ -2658,6 +2764,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     if prepared is not None and not prepared.is_closed():
                         page = prepared
                         reused = True
+                        await bind_task_page(jobid, page)
                         try:
                             await page.bring_to_front()
                         except Exception:
@@ -2683,6 +2790,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     else:
                         prepared_pages.pop(jobid, None)
                         page = await ctx.new_page()
+                        await bind_task_page(jobid, page)
                         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
                         await page.wait_for_timeout(1500)
                     opened_at = asyncio.get_running_loop().time()
