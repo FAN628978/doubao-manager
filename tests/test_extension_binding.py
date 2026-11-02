@@ -56,6 +56,20 @@ def build_bridge(tmp_path, monkeypatch):
                 "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
                 (job_id, "awaiting_manual_send", f"任务 {index} 已准备", "2026-01-02T03:04:05+00:00"),
             )
+        connection.execute(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            ("account_2", "第二账号", "", "data/profiles/account_2", "2026-01-01"),
+        )
+        connection.execute(
+            "INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            ("job_other_account", "other", "ep02", "shot9", "prompt", "account_2",
+             "awaiting_manual_send", "2026-01-01", "2026-01-02"),
+        )
+        connection.execute(
+            "INSERT INTO video_web_jobs(job_id,task_name,submit_mode,phase) VALUES(?,?,?,?)",
+            ("job_other_account", "其他账号分镜", "manual", "awaiting_manual_send"),
+        )
 
     async def browser(_account_id):
         raise AssertionError("绑定解析不应启动浏览器")
@@ -214,3 +228,52 @@ def test_takeover_cancels_only_current_running_worker(tmp_path, monkeypatch):
                 "SELECT operator_takeover FROM video_web_jobs WHERE job_id='job_1'"
             ).fetchone()
         assert other["operator_takeover"] == 0
+
+
+def test_binding_survives_page_and_service_restart_across_accounts(tmp_path, monkeypatch):
+    bridge = build_bridge(tmp_path, monkeypatch)
+    original = asyncio.run(bridge.state.video_bind_task_page("job_0", BoundPage()))
+    refreshed = asyncio.run(bridge.state.video_bind_task_page("job_0", BoundPage()))
+    other_account = asyncio.run(
+        bridge.state.video_bind_task_page("job_other_account", BoundPage())
+    )
+    assert refreshed == original
+    assert other_account != original
+
+    async def browser(_account_id):
+        raise AssertionError("恢复绑定不应启动浏览器")
+
+    restarted = FastAPI()
+    web_api.mount_video_api(
+        restarted,
+        db=application.db,
+        get_account=application.get_account,
+        get_job=application.get_job,
+        browser=browser,
+        base_dir=tmp_path,
+        downloads_dir=tmp_path / "videos",
+        serialize=application.job_row,
+    )
+    after_service_restart = asyncio.run(
+        restarted.state.video_bind_task_page("job_0", BoundPage())
+    )
+    assert after_service_restart == original
+
+    with TestClient(restarted) as client:
+        first = client.get(
+            "/api/v1/extension/tasks/resolve", params={"binding_token": original}
+        ).json()
+        second = client.get(
+            "/api/v1/extension/tasks/resolve", params={"binding_token": other_account}
+        ).json()
+        assert (first["job_id"], first["account_id"]) == ("job_0", "account_1")
+        assert (second["job_id"], second["account_id"]) == (
+            "job_other_account", "account_2"
+        )
+
+
+def test_closing_panel_never_calls_browser_close_api():
+    panel = (ROOT / "browser/extension/panel.js").read_text(encoding="utf-8")
+    assert 'root.classList.add("is-closed")' in panel
+    assert "close-page" not in panel
+    assert "close-window" not in panel
