@@ -85,6 +85,7 @@
         root.querySelectorAll("[data-task-action]").forEach(button => {
           button.disabled = busy || button.dataset.baseDisabled === "true";
           button.classList.toggle("is-loading", busy && button.dataset.taskAction === action);
+          button.setAttribute("aria-busy", String(busy && button.dataset.taskAction === action));
         });
       },
       renderWaiting(message) {
