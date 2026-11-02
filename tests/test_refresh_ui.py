@@ -67,6 +67,7 @@ def _job(job_id, status="downloaded", **overrides):
         "result_push_error": "",
         "archived_at": "",
         "archived": False,
+        "operator_takeover": False,
         "manual_confirm_sent": False,
         "recovery": {},
     }
@@ -422,6 +423,34 @@ def test_shift_select_anchor_survives_silent_refresh():
 
     asyncio.run(run())
 
+
+def test_takeover_task_enables_all_five_process_buttons():
+    async def run():
+        server = Server()
+        server.jobs = [_job(
+            "job_takeover",
+            status="needs_review",
+            operator_takeover=True,
+        )]
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate(
+                    "() => {switchView('jobs');setJobSection('processing')}"
+                )
+                buttons = page.locator(
+                    "#jobsTable tr[data-job-id='job_takeover'] .next-row > button"
+                )
+                assert await buttons.count() >= 5
+                for index in range(5):
+                    assert not await buttons.nth(index).is_disabled()
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
 def test_row_signature_covers_every_rendered_field():
     """行签名必须覆盖所有会显示在行里的字段，否则静默刷新会漏更新。"""
     import re
@@ -436,7 +465,7 @@ def test_row_signature_covers_every_rendered_field():
         "submit_mode", "task_name", "has_task_page", "web_page_url",
         "session_url", "session_id", "result_card_index",
         "recall_state", "can_push_result", "result_pushed_at",
-        "result_push_error", "error_code", "updated_at", "recovery",
+        "result_push_error", "operator_takeover", "error_code", "updated_at", "recovery",
     }
     missing = must_have - fields
     assert not missing, f"行签名缺少字段：{sorted(missing)}"

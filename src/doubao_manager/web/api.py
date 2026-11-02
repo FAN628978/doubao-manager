@@ -1745,16 +1745,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             else "进入调度" if pending_status
             else "提交素材"
         )
-        blocked = recovering or takeover
-        busy_reason = (
-            "当前任务正由人工接管，请先结束接管或恢复自动执行"
-            if takeover else "Claude 正在处理该任务，请等待恢复结束"
-        )
+        blocked = recovering and not takeover
+        busy_reason = "Claude 正在处理该任务，请等待恢复结束"
         return [
             {
                 "key": first_key,
                 "label": first_label,
-                "enabled": not blocked and can_prepare and not dispatched,
+                "enabled": takeover or (not blocked and can_prepare and not dispatched),
                 "reason": busy_reason if blocked else (
                     "任务已进入调度，无需重复点击" if dispatched else "当前状态不能提交素材"
                 ),
@@ -1764,23 +1761,27 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             {
                 "key": "send",
                 "label": "确认发送",
-                "enabled": not blocked and status == MANUAL_WAIT and has_page,
+                "enabled": takeover or (not blocked and status == MANUAL_WAIT and has_page),
                 "reason": busy_reason if blocked else "仅已准备完成的任务可以确认发送",
                 "confirm": "确认发送当前任务已经准备好的素材与提示词？",
             },
             {
                 "key": "confirm",
                 "label": "发送确认语",
-                "enabled": not blocked and status in (MANUAL_WAIT, "confirming", "needs_review") and has_page,
+                "enabled": takeover or (
+                    not blocked and status in (MANUAL_WAIT, "confirming", "needs_review") and has_page
+                ),
                 "reason": busy_reason if blocked else "当前状态不能发送确认语",
                 "confirm": "确认向当前任务网页发送所选确认语？此操作可能继续视频生成。",
             },
             {
                 "key": "download",
                 "label": "下载视频",
-                "enabled": not blocked and not recalling and status in (
-                    "downloaded", "needs_review", "failed", MANUAL_WAIT, "confirming", "generating"
-                ) and has_page,
+                "enabled": takeover or (
+                    not blocked and not recalling and status in (
+                        "downloaded", "needs_review", "failed", MANUAL_WAIT, "confirming", "generating"
+                    ) and has_page
+                ),
                 "reason": busy_reason if blocked else (
                     "视频正在下载，请等待归档完成" if recalling else "当前任务还没有可关联的任务网页"
                 ),
@@ -1789,7 +1790,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             {
                 "key": "push",
                 "label": "再次推送服务器" if web.get("result_pushed_at") else "推送服务器",
-                "enabled": not blocked and bool(item.get("video_path")) and bool(web.get("result_push_url")),
+                "enabled": takeover or (
+                    not blocked and bool(item.get("video_path")) and bool(web.get("result_push_url"))
+                ),
                 "reason": busy_reason if blocked else "需要已归档视频和服务器推送配置",
                 "confirm": "",
             },

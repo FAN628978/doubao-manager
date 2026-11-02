@@ -231,7 +231,7 @@ def test_takeover_and_resume_affect_only_bound_task(tmp_path, monkeypatch):
             "/api/v1/extension/tasks/resolve", params={"binding_token": token}
         ).json()
         assert resolved["takeover"]["active"] is True
-        assert all(not action["enabled"] for action in resolved["actions"])
+        assert all(action["enabled"] for action in resolved["actions"])
         assert resolved["manual_controls"][0]["key"] == "resume_takeover"
         with application.db() as connection:
             other = connection.execute(

@@ -921,7 +921,7 @@ async def list_jobs():
             "SELECT job_id, web_page_url, session_url, session_id, result_card_index, "
             "quota_state, task_name, submit_mode, duration, mode, ratio, model, "
             "error_code, recall_state, result_push_url, result_pushed_at, "
-            "result_push_error, archived_at, dispatched_at "
+            "result_push_error, archived_at, dispatched_at, operator_takeover "
             "FROM video_web_jobs").fetchall()
                     if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='video_web_jobs'").fetchone()
                     else [])
@@ -944,6 +944,7 @@ async def list_jobs():
         "result_push_error": r["result_push_error"] or "",
         "archived_at": r["archived_at"] or "",
         "dispatched_at": r["dispatched_at"] or "",
+        "operator_takeover": bool(r["operator_takeover"]),
     } for r in web_rows}
     prepared_pages = getattr(app.state, "video_prepared_pages", {})
     recovery_service = getattr(app.state, "video_recovery_service", None)
@@ -978,6 +979,7 @@ async def list_jobs():
                     "archived_at": meta["archived_at"] if meta else "",
                     # 非空 = 已交给调度器（等名额/账号）；空 = 还没人点“进入调度”。
                     "dispatched_at": meta["dispatched_at"] if meta else "",
+                    "operator_takeover": meta["operator_takeover"] if meta else False,
                     # 用户手动归档后才算“已归档”；否则已下载完成的任务留在“处理完”。
                     "archived": bool(meta and meta["archived_at"]),
                     "manual_confirm_sent": bool(row["status"] == "needs_review" and quota_state in ("reserved", "unknown"))}
