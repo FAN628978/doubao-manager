@@ -998,3 +998,43 @@ def test_pending_web_job_can_select_or_restore_automatic_account():
                 await browser.close()
 
     asyncio.run(run())
+
+
+def test_account_list_paginates_and_search_resets_to_first_page():
+    async def run():
+        server = Server()
+        template = server.accounts[0]
+        server.accounts = [{
+            **template,
+            "id": f"account_{index:02d}",
+            "name": f"账号{index:02d}",
+            "sequence": index,
+            "quota": dict(template["quota"]),
+        } for index in range(1, 46)]
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => switchView('accounts')")
+
+                assert await page.locator("#accountsTable tr").count() == 20
+                assert "第 1 / 3 页" in await page.inner_text("#accountPagination")
+                first_page = await page.inner_text("#accountsTable")
+                assert "account_01" in first_page
+                assert "account_21" not in first_page
+
+                await page.get_by_role("button", name="下一页").click()
+                second_page = await page.inner_text("#accountsTable")
+                assert "account_21" in second_page
+                assert "account_01" not in second_page
+                assert "第 2 / 3 页" in await page.inner_text("#accountPagination")
+
+                await page.fill("#accountSearch", "账号45")
+                assert await page.locator("#accountsTable tr").count() == 1
+                assert "account_45" in await page.inner_text("#accountsTable")
+                assert await page.evaluate("() => state.accountPage") == 1
+                assert await page.locator("#accountPagination").is_hidden()
+            finally:
+                await browser.close()
+
+    asyncio.run(run())

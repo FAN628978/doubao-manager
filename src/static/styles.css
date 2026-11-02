@@ -298,6 +298,8 @@
     .switch-track::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#aab2bf;box-shadow:0 1px 3px #0008;transition:transform .18s,background .18s}
     .switch-control input:checked+.switch-track{border-color:#8fcf50;background:#79b83f}.switch-control input:checked+.switch-track::after{transform:translateX(20px);background:#f5ffe9}
     .switch-control input:focus-visible+.switch-track{box-shadow:var(--control-focus)}
+    .account-pagination{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 18px;border-top:1px solid #202630;color:var(--muted);font-size:10px}
+    .account-pagination>div{display:flex;gap:7px}.account-pagination .btn{min-width:82px}
     button:focus-visible{outline:none;box-shadow:var(--control-focus)!important}
     @media(max-width:650px){
       .actions .btn,.toolbar .btn,.modal-foot .btn{height:auto;min-height:36px;white-space:normal;line-height:1.35;padding:8px 10px}
@@ -306,6 +308,7 @@
       .next-row .btn{min-height:30px;white-space:normal;line-height:1.25;padding-top:6px;padding-bottom:6px}
       .job-bulk-actions .btn{flex:0 0 auto;width:auto;height:32px;min-height:32px;white-space:nowrap}
       .text-link{min-height:28px}
+      .account-pagination{align-items:stretch;flex-direction:column}.account-pagination>div{display:grid;grid-template-columns:1fr 1fr}.account-pagination .btn{width:100%}
     }
     @media(prefers-reduced-motion:reduce){
       *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}
