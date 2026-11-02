@@ -172,6 +172,15 @@ def test_account_is_allocated_only_when_job_enters_processing(tmp_path, monkeypa
         assert second_state["account_id"] is None, second_state
         assert second_state["web"]["quota_state"] == "", second_state
 
+        # 等待名额期间可以选定账号；worker 真正开始时必须重新读取该选择。
+        assigned = client.post(
+            f"/api/jobs/{second['id']}/account",
+            json={"account_id": "account_2"},
+        )
+        assert assigned.status_code == 200, assigned.text
+        assert assigned.json()["account_id"] == "account_2"
+        assert assigned.json()["web"]["quota_state"] == ""
+
         release.set()
         for job_id in (first["id"], second["id"]):
             for _ in range(400):
@@ -183,6 +192,7 @@ def test_account_is_allocated_only_when_job_enters_processing(tmp_path, monkeypa
             # 下载完成并不等于归档：archived_at 为空，任务留在“处理完”。
             assert state["web"]["archived_at"] == ""
             assert state["archived"] is False
+        assert started_accounts[1] == "account_2"
 
 
 def test_downloaded_job_stays_finished_until_user_archives(env):

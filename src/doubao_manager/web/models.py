@@ -69,6 +69,10 @@ class IgnoreQuotaSetting(BaseModel):
     ignore_quota_check: bool
 
 
+class ClaudeRecoverySetting(BaseModel):
+    claude_recovery_enabled: bool
+
+
 class ConfirmationSendRequest(BaseModel):
     preset_id: str = Field(min_length=1, max_length=80)
 

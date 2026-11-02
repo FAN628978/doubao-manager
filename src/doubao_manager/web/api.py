@@ -22,6 +22,7 @@ from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
 
 from agent_recovery.context import capture_page_snapshot, error_code_from_exception
+from agent_recovery.config import AgentConfig
 from agent_recovery.service import ExceptionRecoveryService
 from agent_recovery.tools import RecoveryBackend
 
@@ -40,6 +41,7 @@ from .config import (
     TERMINAL,
 )
 from .models import (
+    ClaudeRecoverySetting,
     ConfirmationPresetInput,
     ConfirmationSendRequest,
     IgnoreQuotaSetting,
@@ -93,12 +95,12 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if resolved != allowed and allowed not in resolved.parents:
             raise HTTPException(409, "data 中的文件路径超出允许目录")
         return resolved
-    # Serialize browser use per account. Different account profiles may run in parallel.
-    # No account rotation or retry after submission.
+    # Manual send/recall operations remain serialized per account. Automatic jobs
+    # use dedicated pages and may run concurrently in the same browser context.
     locks: dict[str, asyncio.Lock] = {}
     pending: dict[str, asyncio.Task] = {}
-    # 人工发送任务停留期间保留它准备页面的句柄：操作者点“关联下载”时优先复用这个
-    # 已经打开、且可能已经从 /chat/local_* 转成真实会话 id 的标签页。
+    # 每个任务从开始执行起就绑定自己的网页句柄。人工发送、异常复查和关联下载
+    # 都优先复用该任务实际执行的标签页，避免按账号的最后一个页面猜测。
     prepared_pages: dict[str, object] = {}
     app.state.video_pending = pending
     app.state.video_prepared_pages = prepared_pages
@@ -107,9 +109,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     background_tasks: set[asyncio.Task] = set()
     app.state.video_background_tasks = background_tasks
     # The processing limit controls how many machine-owned jobs may run at once.
-    # Browser work is serialized per account (account_condition) instead of by a
-    # single global lane: two accounts no longer wait for each other, so one slow
-    # download cannot freeze every other account.
+    # Automatic browser work is limited only by the global processing setting.
+    # Each task owns a dedicated page, so jobs from the same account can progress
+    # concurrently without sharing page state.
     processing_condition = asyncio.Condition()
     active_processing = 0
     processing_job_ids: set[str] = set()
@@ -118,13 +120,15 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     # there would let three abnormal jobs block every new task indefinitely.
     processing_statuses = frozenset(ACTIVE)
     account_condition = asyncio.Condition()
-    account_owners: dict[str, str] = {}
+    account_owners: dict[str, set[str]] = {}
     idle_close_tasks: dict[str, asyncio.Task] = {}
     app.state.video_idle_close_tasks = idle_close_tasks
 
     def account_is_busy(account_id: str, ignore_jobid: str = "") -> bool:
         account_pending = getattr(recovery_service, "account_pending", None)
         if account_pending is not None and account_pending(account_id):
+            return True
+        if account_owners.get(account_id, set()) - {ignore_jobid}:
             return True
         for other_jobid, task in list(pending.items()):
             if other_jobid == ignore_jobid or task.done():
@@ -135,6 +139,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             except Exception:
                 continue
         for other_jobid, page in list(prepared_pages.items()):
+            if other_jobid == ignore_jobid:
+                continue
             try:
                 if get_job(other_jobid)["account_id"] != account_id:
                     continue
@@ -180,6 +186,62 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         idle_close_tasks[account_id] = asyncio.create_task(
             close_account_after_idle(account_id, jobid)
         )
+
+    async def cleanup_downloaded_browser(
+        jobid: str, account_id: str | None, page=None
+    ) -> str:
+        """Close this task's page, or the account window when it is the last task."""
+        bound_page = prepared_pages.pop(jobid, None)
+        pages = []
+        for candidate in (page, bound_page):
+            if candidate is not None and all(candidate is not item for item in pages):
+                pages.append(candidate)
+
+        async def close_task_pages() -> None:
+            for task_page in pages:
+                try:
+                    is_closed = getattr(task_page, "is_closed", None)
+                    if is_closed is None or not is_closed():
+                        await task_page.close()
+                except Exception:
+                    pass
+
+        if not account_id:
+            await close_task_pages()
+            return "page"
+
+        idle_close = idle_close_tasks.pop(account_id, None)
+        if idle_close is not None and not idle_close.done():
+            idle_close.cancel()
+
+        message = ""
+        result = "page"
+        async with account_condition:
+            if account_is_busy(account_id, ignore_jobid=jobid):
+                await close_task_pages()
+                message = "同账号仍有其他任务，仅关闭当前任务网页"
+            elif close_browser is None:
+                await close_task_pages()
+                message = "未配置浏览器窗口关闭功能，已关闭当前任务网页"
+            else:
+                try:
+                    await close_browser(account_id)
+                    result = "window"
+                    message = "账号没有其他任务，已关闭浏览器窗口"
+                except Exception as exc:
+                    await close_task_pages()
+                    message = f"关闭账号浏览器窗口失败，已关闭当前任务网页：{str(exc)[:160]}"
+
+        with db() as c:
+            current = c.execute(
+                "SELECT status FROM jobs WHERE id=?", (jobid,)
+            ).fetchone()
+            c.execute(
+                "INSERT INTO video_web_events(job_id,status,message,timestamp) "
+                "VALUES(?,?,?,?)",
+                (jobid, current["status"] if current else "downloaded", message, ts()),
+            )
+        return result
 
     def local_processing_limit() -> int:
         with db() as c:
@@ -275,42 +337,25 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             processing_job_ids.discard(jobid)
 
     async def acquire_account_slot(jobid: str, account_id: str) -> None:
-        """Keep one unfinished job at a time on each account."""
+        """Track this job as an active user of the account browser context."""
         async with account_condition:
-            await account_condition.wait_for(
-                lambda: account_owners.get(account_id) in (None, jobid)
-            )
-            account_owners[account_id] = jobid
+            account_owners.setdefault(account_id, set()).add(jobid)
 
     async def acquire_account_slot_with_timeout(
         jobid: str, account_id: str
     ) -> bool:
-        """Wait for an account lane but never forever.
-
-        A worker that died without releasing its lane, or a browser action that
-        never returns, must not pin every later job on that account. On timeout the
-        caller puts its job back into the automatic retry queue instead of hanging.
-        """
-        try:
-            limit = max(
-                1.0,
-                float(os.getenv("DOUBAO_ACCOUNT_WAIT_TIMEOUT", "600")),
-            )
-        except ValueError:
-            limit = 600.0
-        try:
-            await asyncio.wait_for(
-                acquire_account_slot(jobid, account_id), timeout=limit
-            )
-            return True
-        except asyncio.TimeoutError:
-            return False
+        """Register an account user; retained for existing worker call sites."""
+        await acquire_account_slot(jobid, account_id)
+        return True
 
     async def release_account_slot(jobid: str, account_id: str) -> None:
         async with account_condition:
-            if account_owners.get(account_id) != jobid:
+            owners = account_owners.get(account_id)
+            if not owners or jobid not in owners:
                 return
-            account_owners.pop(account_id, None)
+            owners.discard(jobid)
+            if not owners:
+                account_owners.pop(account_id, None)
             account_condition.notify_all()
 
     async def release_account_slot_if_finished(
@@ -344,8 +389,11 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 release_account_slot_later(jobid, account_id)
             )
         except RuntimeError:
-            if account_owners.get(account_id) == jobid:
-                account_owners.pop(account_id, None)
+            owners = account_owners.get(account_id)
+            if owners:
+                owners.discard(jobid)
+                if not owners:
+                    account_owners.pop(account_id, None)
 
     # Exposed for the legacy job delete path, which lives outside this module.
     app.state.video_release_account_slot = release_account_slot
@@ -371,6 +419,15 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "SELECT value FROM local_settings WHERE key='ignore_quota_check'"
             ).fetchone()
         return bool(row) and str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
+
+    def local_claude_recovery_enabled() -> bool:
+        with db() as c:
+            row = c.execute(
+                "SELECT value FROM local_settings WHERE key='claude_recovery_enabled'"
+            ).fetchone()
+        if row is None:
+            return True
+        return str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
 
     @app.get("/api/settings/video-submit-mode", tags=["Local Settings"])
     async def get_video_submit_mode():
@@ -425,6 +482,39 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 ("1" if payload.ignore_quota_check else "0",),
             )
         return {"ignore_quota_check": payload.ignore_quota_check}
+
+    @app.get("/api/settings/claude-recovery", tags=["Local Settings"])
+    async def get_claude_recovery_setting():
+        ensure_schema()
+        environment_enabled = AgentConfig.from_env().enabled
+        local_enabled = local_claude_recovery_enabled()
+        return {
+            "claude_recovery_enabled": bool(environment_enabled and local_enabled),
+            "environment_enabled": environment_enabled,
+            "active_recoveries": int(getattr(recovery_service, "pending_count", 0) or 0),
+        }
+
+    @app.put("/api/settings/claude-recovery", tags=["Local Settings"])
+    async def update_claude_recovery_setting(payload: ClaudeRecoverySetting):
+        ensure_schema()
+        with db() as c:
+            c.execute(
+                "INSERT INTO local_settings(key,value) VALUES('claude_recovery_enabled',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("1" if payload.claude_recovery_enabled else "0",),
+            )
+        if not payload.claude_recovery_enabled:
+            shutdown = getattr(recovery_service, "shutdown", None)
+            if shutdown is not None:
+                await shutdown()
+        environment_enabled = AgentConfig.from_env().enabled
+        return {
+            "claude_recovery_enabled": bool(
+                environment_enabled and payload.claude_recovery_enabled
+            ),
+            "environment_enabled": environment_enabled,
+            "active_recoveries": int(getattr(recovery_service, "pending_count", 0) or 0),
+        }
 
     def fingerprint(req):
         # Display naming is metadata, not generation input; changing it must not break
@@ -564,9 +654,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             ).fetchall()
         job_state = dict(row) if row else {}
         if row:
-            owner = account_owners.get(row["account_id"] or "")
-            job_state["account_owner_job_id"] = owner or ""
-            job_state["account_owned_by_job"] = owner in (None, jobid)
+            owners = account_owners.get(row["account_id"] or "", set())
+            other_owner = next((owner for owner in owners if owner != jobid), "")
+            job_state["account_owner_job_id"] = (
+                jobid if jobid in owners else other_owner
+            )
+            job_state["account_owner_job_ids"] = sorted(owners)
+            job_state["account_owned_by_job"] = not owners or jobid in owners
         return {
             "job_state": job_state,
             "recent_events": [dict(event) for event in reversed(events)],
@@ -864,30 +958,37 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         heartbeat_stop = asyncio.Event()
         heartbeat_task = None
         account_claimed = False
+        download_succeeded = False
         ctx = None
         recovery_error = None
         try:
             async with browser_slot(jobid):
                 with db() as c:
                     row = c.execute(
-                        "SELECT status FROM jobs WHERE id=?", (jobid,)
+                        "SELECT status,account_id FROM jobs WHERE id=?", (jobid,)
                     ).fetchone()
                 if not row or row["status"] != "queued":
                     await release_processing_job(jobid)
                     return
+                # The operator may choose or clear an account while this queued
+                # worker waits for a processing slot. Always use the latest value.
+                req.account_id = row["account_id"] or None
                 # 已拿到处理名额：这是“进入处理前”分配账号的唯一位置。
-                if not req.account_id:
-                    try:
+                try:
+                    if not req.account_id:
                         req.account_id = allocate_account(jobid, req, avoid_account_id)
-                    except HTTPException as exc:
-                        # 没有可用账号/额度：留在自动重试队列里，由 queue tick 稍后
-                        # 重派，不再把 dispatched_at 清掉等人来点第二次。
-                        defer_job(
-                            jobid,
-                            f"暂无可用账号或额度（{exc.detail}），后台自动重试",
-                        )
-                        await release_processing_job(jobid)
-                        return
+                    else:
+                        ensure_start_quota(jobid, req.account_id)
+                except HTTPException as exc:
+                    # 没有可用账号/额度：留在自动重试队列里，由 queue tick 稍后
+                    # 重派，不再把 dispatched_at 清掉等人来点第二次。
+                    defer_job(
+                        jobid,
+                        f"暂无可用账号或额度（{exc.detail}），后台自动重试",
+                    )
+                    await release_processing_job(jobid)
+                    return
+                if row["account_id"] is None:
                     with db() as c:
                         c.execute("UPDATE jobs SET account_id=?,updated_at=? WHERE id=?",
                                   (req.account_id, ts(), jobid))
@@ -902,18 +1003,10 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 with db() as c:
                     if bool(account_value(account, "is_member", 0)):
                         c.execute("UPDATE video_web_jobs SET model=? WHERE job_id=?", (MEMBER_MODEL, jobid))
-                # Only one browser task per account, but different accounts run in
-                # parallel. There is no global browser lane anymore: one slow download
-                # on account A must never freeze account B.
-                #
-                # The job stays “queued” (and says why) while it waits, so a task
-                # parked behind a busy account is visibly waiting instead of looking
-                # like it is already opening a browser.
-                if account_owners.get(req.account_id) not in (None, jobid):
-                    emit(jobid, "queued",
-                         f"账号 {account_label(req.account_id)} 正被其它任务占用，等待其结束")
+                # Multiple jobs may share one account context. perform() creates a
+                # dedicated page for each job and binds that page before any action.
                 if not await acquire_account_slot_with_timeout(jobid, req.account_id):
-                    defer_job(jobid, "等待账号空闲超时，后台自动重试")
+                    defer_job(jobid, "登记账号任务失败，后台自动重试")
                     await release_processing_job(jobid)
                     return
                 account_claimed = True
@@ -939,7 +1032,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                         "INSERT INTO video_web_events(job_id,status,message,timestamp) "
                         "VALUES(?,?,?,?)",
                         (jobid, "opening",
-                         "已取得账号名额，开始浏览器操作", now),
+                         "已登记账号任务，开始操作任务专属网页", now),
                     )
                 heartbeat_task = asyncio.create_task(
                     heartbeat_loop(jobid, heartbeat_stop)
@@ -979,14 +1072,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                         url=url,
                     )
 
-                async def review_page(page):
+                async def task_page(page):
                     prepared_pages[jobid] = page
 
                 result = await perform(
                     ctx, req, assets, target, status, page_url, binding,
                     on_manual_ready=manual_ready,
                     confirmation_text=default_confirmation_text(),
-                    close_on_success=True, on_review_page=review_page,
+                    close_on_success=False, on_review_page=task_page,
                 )
                 if result.get("manual"):
                     return
@@ -995,6 +1088,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     jobid, "已下载并校验视频", result,
                     close_account_after=False,
                 )
+                download_succeeded = True
         except ReviewNeeded as e:
             emit(jobid, "needs_review", e.message, code=e.code)
             recovery_error = {
@@ -1014,6 +1108,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             if heartbeat_task is not None:
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
             pending.pop(jobid, None)
+            bound_page = prepared_pages.get(jobid)
+            if bound_page is not None:
+                try:
+                    if bound_page.is_closed():
+                        prepared_pages.pop(jobid, None)
+                except Exception:
+                    prepared_pages.pop(jobid, None)
             if account_claimed:
                 await release_account_slot_if_finished(jobid, req.account_id)
             if recovery_error is not None:
@@ -1030,7 +1131,10 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     account_id=req.account_id or "",
                     page=agent_page,
                 )
-            schedule_idle_close(req.account_id, jobid)
+            if download_succeeded:
+                await cleanup_downloaded_browser(jobid, req.account_id)
+            else:
+                schedule_idle_close(req.account_id, jobid)
 
     def store_image_asset(blob: bytes, filename: str) -> str:
         """Validate an uploaded image blob and persist it under data/web_assets."""
@@ -1284,8 +1388,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                                     x_api_key: Optional[str] = Header(None)):
         """Assign or clear the account of a job that has not started executing yet.
 
-        Pending jobs hold no account, so assigning one here only records an intent;
-        quota is still reserved when the job leaves the pending queue.
+        Clearing the selection restores automatic allocation. A selected account is
+        re-read and its quota is reserved only when the worker actually starts.
         """
         auth(x_api_key); ensure_schema()
         item = detail(jobid)
@@ -1835,6 +1939,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if jobid in pending: raise HTTPException(409,"任务正在执行")
         ctx = await browser(item["account_id"])
         page = await ctx.new_page()
+        prepared_pages[jobid] = page
         await page.goto(url,wait_until="domcontentloaded",timeout=60000)
         await page.wait_for_timeout(1500)
         state = await read_state(page)
@@ -1853,11 +1958,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         await finish_downloaded(
             jobid, "人工复查成功：从详情面板下载无水印成片，无重复生成",
             {"video_url": result["video_url"], "web_page_url": url, "output": result["output"]},
-            close_account_after=True)
-        try:
-            await page.close()
-        except Exception:
-            pass
+            close_account_after=False)
+        await cleanup_downloaded_browser(jobid, item["account_id"], page=page)
         return detail(jobid)
 
     @app.post("/api/v1/videos/generations/{jobid}/manual-result",tags=["Doubao Web Video"])
@@ -1928,7 +2030,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if prepared is not None and not prepared.is_closed():
             await set_job_page_title(prepared, page_title)
             await prepared.bring_to_front()
-            return {"ok": True, "job_id": jobid, "url": prepared.url, "reused": True}
+            return {"ok": True, "job_id": jobid, "url": prepared.url,
+                    "reused": True, "message": "已打开该任务绑定的网页"}
         url = (item["web"].get("web_page_url") or "").strip()
         if not url:
             raise HTTPException(409, "该任务还没有记录网页地址")
@@ -1947,14 +2050,18 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 if (existing.url or "").split("?")[0] == key:
                     await set_job_page_title(existing, page_title)
                     await existing.bring_to_front()
-                    return {"ok": True, "job_id": jobid, "url": url, "reused": True}
+                    prepared_pages[jobid] = existing
+                    return {"ok": True, "job_id": jobid, "url": url,
+                            "reused": True, "message": "已打开该任务绑定的网页"}
             except Exception:
                 continue
         page = await ctx.new_page()
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
         await set_job_page_title(page, page_title)
         await page.bring_to_front()
-        return {"ok": True, "job_id": jobid, "url": url, "reused": False}
+        prepared_pages[jobid] = page
+        return {"ok": True, "job_id": jobid, "url": url,
+                "reused": False, "message": "已打开该任务绑定的网页"}
 
     @app.post("/api/v1/videos/generations/{jobid}/open-window", tags=["Doubao Web Video"])
     async def open_window(jobid: str, x_api_key: Optional[str] = Header(None)):
@@ -2188,6 +2295,22 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             if prepared is not None:
                 return {"ok": True, "job_id": jobid, "closed": False, "already_closed": True}
             raise HTTPException(409, "该任务还没有记录网页地址")
+        parsed = urlparse(url)
+        is_test_page = (
+            os.getenv("DOUBAO_TEST_MODE") == "1"
+            and parsed.scheme == "http"
+            and parsed.hostname in ("127.0.0.1", "localhost")
+        )
+        if not is_test_page:
+            if parsed.scheme != "https" or parsed.hostname not in (
+                "doubao.com", "www.doubao.com"
+            ):
+                raise HTTPException(422, "任务网页不是受信任的豆包地址")
+            if not CHAT_PAGE_URL.search(url):
+                raise HTTPException(
+                    409,
+                    "任务没有绑定具体会话网页；为避免关闭同账号其他任务网页，系统未执行关闭",
+                )
 
         ctx = existing_browser(account_id) if existing_browser is not None else None
         if ctx is None:
@@ -2659,10 +2782,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         finally:
             if recovery_error is not None:
                 recovery_snapshot = await capture_page_snapshot(page)
-            # 下载成功后，无论页面来自人工准备还是本次召回都关闭；失败时保留复用页面供人工检查。
-            if download_succeeded:
-                prepared_pages.pop(jobid, None)
-            if page is not None and (download_succeeded or not reused):
+            # 下载失败时保留复用页面供人工检查；成功后的关闭策略在释放任务占用后统一判断。
+            if page is not None and not download_succeeded and not reused:
                 try:
                     await page.close()
                 except Exception:
@@ -2671,6 +2792,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             pending.pop(jobid, None)
             if account_claimed:
                 await release_account_slot_if_finished(jobid, account_id)
+            if download_succeeded:
+                await cleanup_downloaded_browser(jobid, account_id, page=page)
             if recovery_error is not None:
                 await notify_recovery(
                     jobid,
@@ -2680,7 +2803,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     account_id=account_id or "",
                     page_snapshot=recovery_snapshot,
                 )
-            schedule_idle_close(account_id, jobid)
+            if not download_succeeded:
+                schedule_idle_close(account_id, jobid)
 
     async def begin_recall(jobid: str, wait: bool = False, force_redownload: bool = False):
         item = detail(jobid)
@@ -2981,8 +3105,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if close_browser is None:
             return {"success": False, "verified": False, "detail": "未配置浏览器关闭功能"}
         async with account_condition:
-            owner = account_owners.get(account_id)
-            if owner and owner != jobid:
+            owners = account_owners.get(account_id, set())
+            if owners - {jobid}:
                 return {
                     "success": False,
                     "verified": False,
@@ -3172,26 +3296,19 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "detail": "任务所属账号已删除，无法释放占用",
             }
         async with account_condition:
-            owner = account_owners.get(account_id)
-            if owner and owner != jobid:
-                return {
-                    "success": False,
-                    "verified": True,
-                    "recovery_complete": False,
-                    "detail": f"账号由其他任务 {owner} 占用，拒绝抢占释放",
-                }
+            owned_before = jobid in account_owners.get(account_id, set())
         await release_account_slot(jobid, account_id)
         async with account_condition:
-            released = account_owners.get(account_id) != jobid
+            released = jobid not in account_owners.get(account_id, set())
         return {
-            "success": released,
+            "success": released and owned_before,
             "verified": released,
             "recovery_complete": False,
             "status": item.get("status") or "",
             "detail": (
-                "已释放该任务持有的机器账号 lane；恢复租约仍保留到本次恢复结束"
-                if released
-                else "未能释放账号占用"
+                "已释放该任务的账号使用记录；同账号其他任务不受影响"
+                if released and owned_before
+                else "该任务没有残留的账号占用"
             ),
         }
 
@@ -3365,6 +3482,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             ),
             context_loader=load_recovery_context,
             log_dir=base / "data" / "agent_recovery",
+            enabled_provider=local_claude_recovery_enabled,
         )
     app.state.video_recovery_service = recovery_service
 

@@ -85,6 +85,9 @@ class Server:
         self.feedback_requests = 0
         self.ignore_quota_check = False
         self.ignore_quota_updates = []
+        self.claude_recovery_enabled = False
+        self.claude_recovery_updates = []
+        self.job_account_updates = []
         self.accounts = [{
             "id": "account_1", "name": "账号一", "note": "",
             "is_member": False, "priority": 0, "paused": False,
@@ -150,6 +153,36 @@ class Server:
                 status=200,
                 content_type="application/json",
                 body=_json({"ignore_quota_check": self.ignore_quota_check}),
+            )
+        elif url.endswith("/api/settings/claude-recovery"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.claude_recovery_enabled = bool(
+                    body.get("claude_recovery_enabled")
+                )
+                self.claude_recovery_updates.append(
+                    self.claude_recovery_enabled
+                )
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json({
+                    "claude_recovery_enabled": self.claude_recovery_enabled,
+                    "environment_enabled": True,
+                    "active_recoveries": 0,
+                }),
+            )
+        elif "/api/jobs/" in url and url.endswith("/account"):
+            job_id = url.split("/api/jobs/", 1)[1].rsplit("/account", 1)[0]
+            body = json.loads(route.request.post_data or "{}")
+            account_id = body.get("account_id") or None
+            self.job_account_updates.append((job_id, account_id))
+            job = next(item for item in self.jobs if item["id"] == job_id)
+            job["account_id"] = account_id
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json(job),
             )
         else:
             await route.fulfill(status=200, content_type="application/json", body="{}")
@@ -383,6 +416,20 @@ def test_row_signature_covers_every_rendered_field():
     }
     missing = must_have - fields
     assert not missing, f"行签名缺少字段：{sorted(missing)}"
+
+
+def test_task_open_close_actions_target_bound_page_not_account_window():
+    source = (STATIC / "app.js").read_text(encoding="utf-8")
+    actions = source[source.index("function fixedJobActions"):]
+    actions = actions[:actions.index("\n  function filteredJobs")]
+    assert "label:'打开网页'" in actions
+    assert "label:'关闭网页'" in actions
+    assert "openJobPage" in actions
+    assert "closeJobPage" in actions
+    assert "/open-page`" in source
+    assert "/close-page`" in source
+    assert "function openJobWindow" not in source
+    assert "function closeJobWindow" not in source
 
 
 def test_incremental_update_is_not_order_sensitive():
@@ -848,17 +895,11 @@ def test_global_quota_override_is_saved_from_task_settings():
             try:
                 page = await _open_page(browser, server)
                 await page.evaluate("() => openSubmitModeSettings()")
-                assert await page.get_attribute(
-                    "#ignoreQuotaSettingBtn", "aria-pressed"
-                ) == "false"
-                await page.click("#ignoreQuotaSettingBtn")
+                assert not await page.is_checked("#ignoreQuotaSettingToggle")
+                await page.click("#ignoreQuotaSettingToggle")
                 assert await page.evaluate("() => state.settingIgnoreQuota") is True
-                assert await page.get_attribute(
-                    "#ignoreQuotaSettingBtn", "aria-pressed"
-                ) == "true"
-                assert "已解除额度判断" in await page.inner_text(
-                    "#ignoreQuotaSettingBtn"
-                )
+                assert await page.is_checked("#ignoreQuotaSettingToggle")
+                assert "已开启" in await page.inner_text("#ignoreQuotaSettingState")
                 await page.evaluate("() => $('submitModeForm').requestSubmit()")
                 await page.wait_for_function(
                     "() => !document.getElementById('submitModeModal').classList.contains('show')"
@@ -866,13 +907,93 @@ def test_global_quota_override_is_saved_from_task_settings():
                 assert server.ignore_quota_updates == [True]
                 assert await page.evaluate("() => state.ignoreQuotaCheck") is True
                 await page.evaluate("() => openModal('webModal')")
-                assert await page.input_value("#webAccount") == "account_max"
+                # 新任务默认保持“进入处理前自动分配”；最大剩余额度选择由
+                # 后端在真正执行时完成，操作者也可以手动选定账号。
+                assert await page.input_value("#webAccount") == ""
+                assert "自动分配" in await page.locator(
+                    "#webAccount option"
+                ).first.inner_text()
                 await page.evaluate("() => closeModal('webModal')")
 
                 await page.evaluate("() => openSubmitModeSettings()")
-                assert await page.get_attribute(
-                    "#ignoreQuotaSettingBtn", "aria-pressed"
-                ) == "true"
+                assert await page.is_checked("#ignoreQuotaSettingToggle")
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_claude_recovery_switch_is_saved_from_task_settings():
+    async def run():
+        server = Server()
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => openSubmitModeSettings()")
+                assert not await page.is_checked("#claudeRecoverySettingToggle")
+                await page.click("#claudeRecoverySettingToggle")
+                assert await page.is_checked("#claudeRecoverySettingToggle")
+                assert await page.evaluate(
+                    "() => state.settingClaudeRecovery"
+                ) is True
+                assert "已开启" in await page.inner_text(
+                    "#claudeRecoverySettingState"
+                )
+
+                await page.evaluate("() => $('submitModeForm').requestSubmit()")
+                await page.wait_for_function(
+                    "() => !document.getElementById('submitModeModal').classList.contains('show')"
+                )
+                assert server.claude_recovery_updates == [True]
+                assert await page.evaluate(
+                    "() => state.claudeRecoveryEnabled"
+                ) is True
+
+                await page.evaluate("() => openSubmitModeSettings()")
+                assert await page.is_checked("#claudeRecoverySettingToggle")
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_pending_web_job_can_select_or_restore_automatic_account():
+    async def run():
+        server = Server()
+        server.jobs = [_job(
+            "job_pending_account",
+            status="queued",
+            account_id=None,
+            dispatched_at="",
+        )]
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => switchView('jobs')")
+                await page.evaluate("() => setJobSection('queue')")
+                select = page.locator(
+                    "tr[data-job-id='job_pending_account'] .web-account-select"
+                )
+                assert await select.input_value() == ""
+                assert "自动分配" in await select.locator("option").first.inner_text()
+
+                await select.select_option("account_1")
+                await page.wait_for_function(
+                    "() => state.jobs.find(j => j.id === 'job_pending_account').account_id === 'account_1'"
+                )
+                assert server.job_account_updates == [
+                    ("job_pending_account", "account_1")
+                ]
+
+                await select.select_option("")
+                await page.wait_for_function(
+                    "() => state.jobs.find(j => j.id === 'job_pending_account').account_id === null"
+                )
+                assert server.job_account_updates[-1] == (
+                    "job_pending_account", None
+                )
             finally:
                 await browser.close()
 

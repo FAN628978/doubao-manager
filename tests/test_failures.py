@@ -227,7 +227,9 @@ def test_fail_closed_no_false_success(case, expected, tmp_path, monkeypatch):
                     await perform(context, req, {'image1': img}, tmp_path / 'must_not_exist.mp4',
                                   on_status, on_page, on_review_page=on_review_page)
                 assert err.value.code == expected
-                assert bool(review_pages) == (case in ('captcha', 'login'))
+                # Every task is bound to its dedicated page from the start, not only
+                # after login/captcha failures require manual review.
+                assert review_pages == [context.pages[-1]]
                 assert 'downloading' not in statuses
                 assert not (tmp_path / 'must_not_exist.mp4').exists()
                 assert not (tmp_path / 'must_not_exist.webm').exists()
@@ -417,17 +419,21 @@ def test_open_page_reuses_or_opens_managed_tab(tmp_path, monkeypatch):
 
     existing = Page(target)
     ctx = Ctx([existing])
-    with TestClient(build(ctx)) as client:
+    app_existing = build(ctx)
+    with TestClient(app_existing) as client:
         r = client.post('/api/v1/videos/generations/job_open/open-page')
         assert r.status_code == 200, r.text
         assert r.json()['reused'] is True and existing.front and not ctx.created
+        assert app_existing.state.video_prepared_pages['job_open'] is existing
 
     ctx2 = Ctx([])
-    with TestClient(build(ctx2)) as client:
+    app_created = build(ctx2)
+    with TestClient(app_created) as client:
         r = client.post('/api/v1/videos/generations/job_open/open-page')
         assert r.status_code == 200, r.text
         assert r.json()['reused'] is False
         assert ctx2.created and ctx2.created[0].url == target and ctx2.created[0].front
+        assert app_created.state.video_prepared_pages['job_open'] is ctx2.created[0]
 
 
 def test_open_window_targets_only_the_bound_task_card(tmp_path, monkeypatch):

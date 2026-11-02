@@ -1,7 +1,7 @@
 # Claude CLI 异常自主恢复
 
 异常恢复入口默认启动本机 `claude -p` 非交互进程。程序启动时自动检测并接管异常，
-无需设置启用开关、API Key 或模型；正常视频生成、下载和调度链路不会启动 Claude。
+可在管理台“任务执行设置”中通过“Claude 异常恢复”开关动态启停；无需配置 API Key 或模型。正常视频生成、下载和调度链路不会启动 Claude。
 每个异常任务拥有独立的 CLI 进程、MCP 工具会话和额度预算。
 
 运行时只使用 Claude Code CLI；不再提供 Messages API 或其他 Agent 的入口或自动回退。
@@ -27,7 +27,7 @@
 
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
-| `DOUBAO_AGENT_ENABLED` | 异常恢复开关；仅在需要临时停用时设为 `false` | `true` |
+| `DOUBAO_AGENT_ENABLED` | 环境级总开关；设为 `false` 时管理台不能启用 Claude | `true` |
 | `DOUBAO_CLAUDE_CLI_PATH` | Claude CLI 绝对路径；留空自动检测 PATH 和 npm 目录 | 自动检测 |
 | `DOUBAO_AGENT_CLI_TIMEOUT_SECONDS` | 单个 Claude CLI 进程超时秒数 | `900` |
 | `DOUBAO_AGENT_CLI_PERMISSION_MODE` | 旧配置兼容字段；实际固定为最高权限 `bypassPermissions` | `bypassPermissions` |

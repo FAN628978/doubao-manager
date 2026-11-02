@@ -28,10 +28,18 @@ from doubao_manager.web import api as api_impl
 class StubRecoveryService:
     def __init__(self):
         self.calls = []
+        self.shutdown_calls = 0
+
+    @property
+    def pending_count(self):
+        return 0
 
     def notify_exception(self, **kwargs):
         self.calls.append(kwargs)
         return True
+
+    async def shutdown(self):
+        self.shutdown_calls += 1
 
 
 class RecordingBackend:
@@ -403,12 +411,8 @@ def test_account_pending_tracks_agent_until_recovery_finishes(tmp_path, monkeypa
             )
 
     service = _service(tmp_path, BlockingRunner())
-    monkeypatch.setattr(
-        application.app.state,
-        "video_recovery_service",
-        service,
-        raising=False,
-    )
+    original_service = application.app.state.video_recovery_service
+    application.app.state.video_recovery_service = service
 
     async def run():
         nonlocal started, release
@@ -430,7 +434,12 @@ def test_account_pending_tracks_agent_until_recovery_finishes(tmp_path, monkeypa
         assert service.account_pending("account_1") is False
         assert application.account_busy("account_1") is False
 
-    asyncio.run(run())
+    try:
+        asyncio.run(run())
+    finally:
+        # Starlette State stores values in an internal mapping; pytest's generic
+        # monkeypatch teardown can delete this key instead of restoring it.
+        application.app.state.video_recovery_service = original_service
 
 
 def test_manual_send_failure_persists_review_and_notifies_agent(
@@ -817,6 +826,71 @@ def test_disabled_agent_does_not_call_claude_or_write_log(tmp_path, monkeypatch)
     )
     asyncio.run(service.wait_for_idle())
     assert not service.log_path.exists()
+
+
+def test_runtime_enabled_provider_can_disable_claude(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOUBAO_AGENT_ENABLED", "true")
+    enabled = False
+
+    class MustNotRun:
+        async def run(self, **_kwargs):
+            raise AssertionError("must not be called")
+
+    service = ExceptionRecoveryService(
+        backend=RecordingBackend().as_backend(),
+        context_loader=lambda _jobid: {
+            "job_state": _state_for_service(),
+            "recent_events": [],
+        },
+        log_dir=tmp_path / "agent_logs",
+        cli_runner_factory=lambda _config: MustNotRun(),
+        enabled_provider=lambda: enabled,
+    )
+
+    assert service.enabled() is False
+    assert not service.notify_exception(
+        job_id="job_runtime_disabled",
+        error_type="ReviewNeeded",
+        error_code="UPLOAD_UNVERIFIED",
+        error_message="upload failed",
+    )
+    assert service.pending_count == 0
+
+
+def test_claude_recovery_setting_api_persists_and_controls_service(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("DOUBAO_AGENT_ENABLED", "true")
+    _prepare_db(tmp_path, monkeypatch)
+    service = StubRecoveryService()
+    bridge = _mount_bridge(tmp_path, service)
+
+    with TestClient(bridge) as client:
+        initial = client.get("/api/settings/claude-recovery")
+        assert initial.status_code == 200, initial.text
+        assert initial.json()["claude_recovery_enabled"] is True
+
+        disabled = client.put(
+            "/api/settings/claude-recovery",
+            json={"claude_recovery_enabled": False},
+        )
+        assert disabled.status_code == 200, disabled.text
+        assert disabled.json()["claude_recovery_enabled"] is False
+        assert service.shutdown_calls == 1
+        with application.db() as conn:
+            stored = conn.execute(
+                "SELECT value FROM local_settings "
+                "WHERE key='claude_recovery_enabled'"
+            ).fetchone()
+        assert stored["value"] == "0"
+
+        enabled = client.put(
+            "/api/settings/claude-recovery",
+            json={"claude_recovery_enabled": True},
+        )
+        assert enabled.status_code == 200, enabled.text
+        assert enabled.json()["claude_recovery_enabled"] is True
+        assert service.shutdown_calls == 1
 
 
 def test_cli_config_reads_only_recovery_settings(tmp_path, monkeypatch):

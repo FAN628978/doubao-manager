@@ -31,7 +31,7 @@
 X-API-Key: <你的密钥>
 ```
 
-可并发提交多个任务。管理台默认让不同账号全部并行执行、同一账号串行执行；如需限制浏览器资源占用，可将 `DOUBAO_MAX_CONCURRENT_ACCOUNTS` 设置为正整数。
+可并发提交多个任务。不同账号和同一账号的任务都可以并行执行；同一账号的每个任务使用独立标签页。需要限制浏览器资源占用时，可将 `DOUBAO_MAX_CONCURRENT_ACCOUNTS` 设置为正整数。
 
 确认语支持预设管理：`GET/POST /api/v1/videos/confirmation-presets`、`PUT/DELETE /api/v1/videos/confirmation-presets/{preset_id}`。自动执行遇到豆包确认步骤时读取 `preset_default` 的当前内容，不使用代码中的固定文本。人工向指定任务发送时调用：
 
@@ -218,6 +218,12 @@ POST /api/v1/videos/generations/{job_id}/recall
 `quota` 为该任务所属账号当日的额度：`consumed_seconds` 已出片消耗，`reserved_seconds` 排队/执行中占用，`remaining_seconds = daily_limit_seconds - consumed - reserved`。账号列表 `GET /api/accounts` 与 `GET /api/accounts/{account_id}/quota` 也返回同样的额度信息。
 
 任务详情中的 `web.dispatched_at` 非空表示任务已经交给调度器，正在等待处理名额或可用账号；为空表示仍需人工点击“进入调度”。这两种情况的任务状态都可能是 `queued`。
+
+待处理任务默认不指定账号，在真正进入处理前自动分配。操作者可调用 `POST /api/jobs/{id}/account` 并传入 `{"account_id":"acc_xxx"}` 选定账号，或传入 `{"account_id":null}` 恢复自动分配。管理台任务列表中的账号下拉框使用同一接口。
+
+任务列表的“打开网页 / 关闭网页”分别调用 `POST /api/v1/videos/generations/{id}/open-page` 和 `/close-page`，只操作任务绑定的标签页，不会关闭同账号其他任务的网页或整个浏览器窗口。
+
+自动下载、关联下载或复查下载成功后，若同一账号仍有其他任务，服务只关闭本任务绑定的网页；若没有其他任务，则关闭该账号的整个浏览器窗口。
 
 ### 队列状态
 

@@ -522,14 +522,14 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
             time.sleep(0.01)
         assert state["web"]["result_pushed_at"]
         assert confirmation_texts == [default_confirmation]
-        assert close_flags == [True]
+        assert close_flags == [False]
         for _ in range(50):
             if closed_accounts:
                 break
             time.sleep(0.01)
         assert closed_accounts == ["account_1"]
         events = client.get(f"/api/v1/videos/generations/{job_id}/events").json()
-        assert any("账号浏览器已空闲关闭" in event["message"]
+        assert any("账号没有其他任务，已关闭浏览器窗口" in event["message"]
                    for event in events)
         assert pushed == [{
             "url": push_url,
@@ -548,7 +548,7 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
         # 复制任务先进入待处理、不带账号；分配时才会挑一个额度足够的空闲账号。
         assert copied_state["account_id"] is None
         assert confirmation_texts == [default_confirmation]
-        assert close_flags == [True]
+        assert close_flags == [False]
         assert closed_accounts == ["account_1"]
         assert len(pushed) == 1
 
@@ -569,7 +569,7 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
         assert copied_state["web"]["delivery_attempts"] == 1
         assert copied_state["web"]["delivery_next_retry_at"]
         assert confirmation_texts == [default_confirmation, default_confirmation]
-        assert close_flags == [True, True]
+        assert close_flags == [False, False]
         assert closed_accounts == ["account_1", "account_2"]
         assert len(pushed) == 2
 

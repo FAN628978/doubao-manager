@@ -1051,6 +1051,11 @@ async def perform(ctx, req: VideoRequest, assets: dict[str, Path], target: Path,
                   on_binding=None, on_manual_ready=None, confirmation_text: str = "",
                   close_on_success: bool = False, on_review_page=None):
     page = await ctx.new_page()  # New tab ensures previous videos not attributed to this job.
+    # Keep the callback name for compatibility, but bind every task as soon as its
+    # dedicated tab exists.  The caller can then address the exact page throughout
+    # configuration, submission, generation and any later manual review.
+    if on_review_page is not None:
+        await on_review_page(page)
     await on_status("opening", "打开豆包视频页")
     try:
         await page.goto(target_page_url(), wait_until="domcontentloaded", timeout=60000)
@@ -1163,13 +1168,7 @@ async def perform(ctx, req: VideoRequest, assets: dict[str, Path], target: Path,
             except Exception:
                 pass
         return result
-    except ReviewNeeded as exc:
-        if on_review_page is not None and exc.code in ("VERIFICATION_REQUIRED", "LOGIN_REQUIRED"):
-            try:
-                await page.bring_to_front()
-            except Exception:
-                pass
-            await on_review_page(page)
+    except ReviewNeeded:
         raise
     except Exception as e:
         raise ReviewNeeded("WEB_AUTOMATION_ERROR", str(e)[:350]) from e

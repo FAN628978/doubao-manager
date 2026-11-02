@@ -155,7 +155,7 @@ def test_second_account_starts_in_parallel_without_global_browser_lane(tmp_path,
     asyncio.run(run())
 
 
-def test_same_account_runs_strictly_serial(tmp_path, monkeypatch):
+def test_same_account_jobs_run_concurrently_on_dedicated_pages(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
     monkeypatch.setenv("DOUBAO_MAX_CONCURRENT_ACCOUNTS", "0")
     monkeypatch.setenv("DOUBAO_BROWSER_IDLE_CLOSE_SECONDS", "0")
@@ -193,9 +193,21 @@ def test_same_account_runs_strictly_serial(tmp_path, monkeypatch):
         first_started = asyncio.Event()
         second_started = asyncio.Event()
         release_first = asyncio.Event()
+        release_second = asyncio.Event()
         calls = []
         browser_calls = []
         close_calls = []
+        bound_pages = {}
+
+        class FakePage:
+            def __init__(self):
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            async def close(self):
+                self.closed = True
 
         async def fake_browser(account_id):
             browser_calls.append(account_id)
@@ -211,12 +223,16 @@ def test_same_account_runs_strictly_serial(tmp_path, monkeypatch):
             active += 1
             maximum_active = max(maximum_active, active)
             calls.append(req.prompt)
+            page = FakePage()
+            bound_pages[req.prompt] = page
+            await on_review_page(page)
             if req.prompt.endswith("0"):
                 first_started.set()
                 await on_status("generating", "等待视频生成")
                 await release_first.wait()
             else:
                 second_started.set()
+                await release_second.wait()
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"serial-video")
             active -= 1
@@ -234,19 +250,37 @@ def test_same_account_runs_strictly_serial(tmp_path, monkeypatch):
             transport=httpx.ASGITransport(app=app), base_url="http://local"
         ) as client:
             created = [await client.post("/api/v1/videos/generations", json={
-                "account_id": "account_1", "prompt": f"串行任务{index}",
+                "account_id": "account_1", "prompt": f"并行任务{index}",
                 "duration": 4, "submit_mode": "auto", "auto_start": True,
             }) for index in range(2)]
             assert all(response.status_code == 202 for response in created)
             await asyncio.wait_for(first_started.wait(), timeout=1)
             await asyncio.sleep(0.05)
-            assert maximum_active == 1
-            assert calls == ["串行任务0"]
-            assert not second_started.is_set()
-            release_first.set()
             await asyncio.wait_for(second_started.wait(), timeout=1)
-
+            assert maximum_active == 2
+            assert calls == ["并行任务0", "并行任务1"]
             job_ids = [response.json()["id"] for response in created]
+            assert app.state.video_prepared_pages[job_ids[0]] is bound_pages["并行任务0"]
+            assert app.state.video_prepared_pages[job_ids[1]] is bound_pages["并行任务1"]
+            assert bound_pages["并行任务0"] is not bound_pages["并行任务1"]
+            release_first.set()
+
+            for _ in range(100):
+                states = [(await client.get(f"/api/v1/videos/generations/{job_id}")).json()["status"]
+                          for job_id in job_ids]
+                if states[0] == "downloaded":
+                    break
+                await asyncio.sleep(0.01)
+            assert states[0] == "downloaded"
+            for _ in range(50):
+                if bound_pages["并行任务0"].closed:
+                    break
+                await asyncio.sleep(0.01)
+            assert bound_pages["并行任务0"].closed is True
+            assert bound_pages["并行任务1"].closed is False
+            assert close_calls == []
+
+            release_second.set()
             for _ in range(100):
                 states = [(await client.get(f"/api/v1/videos/generations/{job_id}")).json()["status"]
                           for job_id in job_ids]
@@ -254,7 +288,7 @@ def test_same_account_runs_strictly_serial(tmp_path, monkeypatch):
                     break
                 await asyncio.sleep(0.01)
             assert states == ["downloaded", "downloaded"]
-            assert maximum_active == 1
+            assert maximum_active == 2
             assert browser_calls == ["account_1", "account_1"]
             for _ in range(50):
                 if close_calls:

@@ -27,6 +27,7 @@ from .tools import (
 
 ContextLoader = Callable[[str], Mapping[str, Any]]
 CLIRunnerFactory = Callable[[AgentConfig], Any]
+EnabledProvider = Callable[[], bool]
 
 NON_BROWSER_RECOVERY_CODES = frozenset({"RESULT_PUSH_FAILED"})
 RESUMED_TASK_STATUSES = frozenset(
@@ -79,6 +80,7 @@ class ExceptionRecoveryService:
         cli_runner_factory: CLIRunnerFactory | None = None,
         project_root: str | Path | None = None,
         tool_bridge_url: str = "",
+        enabled_provider: EnabledProvider | None = None,
     ):
         self.backend = backend
         self.context_loader = context_loader
@@ -96,6 +98,7 @@ class ExceptionRecoveryService:
             or os.getenv("DOUBAO_RECOVERY_BRIDGE_URL", "").strip()
             or f"http://127.0.0.1:{os.getenv('DOUBAO_PORT', '8765')}"
         ).rstrip("/")
+        self.enabled_provider = enabled_provider
         self._tasks: set[asyncio.Task] = set()
         self._active_job_ids: set[str] = set()
         self._log_lock = asyncio.Lock()
@@ -124,6 +127,21 @@ class ExceptionRecoveryService:
     def job_active(self, job_id: str) -> bool:
         status = self._recovery_status.get(job_id) or {}
         return bool(status.get("active"))
+
+    def enabled(self) -> bool:
+        """Return the effective runtime switch state.
+
+        The environment remains an emergency master switch. The optional local
+        provider lets the management UI disable or enable recovery at runtime.
+        """
+        if not AgentConfig.from_env().enabled:
+            return False
+        if self.enabled_provider is None:
+            return True
+        try:
+            return bool(self.enabled_provider())
+        except Exception:
+            return False
 
     def _set_status(
         self,
@@ -178,8 +196,7 @@ class ExceptionRecoveryService:
         recent_network_errors: list[Any] | None = None,
     ) -> bool:
         """Schedule one isolated Claude CLI process without blocking the worker."""
-        config = AgentConfig.from_env()
-        if not config.enabled or not job_id or job_id in self._active_job_ids:
+        if not self.enabled() or not job_id or job_id in self._active_job_ids:
             return False
         try:
             loop = asyncio.get_running_loop()
