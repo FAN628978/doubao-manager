@@ -14,6 +14,7 @@
 
   function createPanel(host) {
     let actionHandler = null;
+    let renderSignature = "";
     const shadow = host.attachShadow({mode: "open"});
     const style = document.createElement("link");
     style.rel = "stylesheet";
@@ -87,11 +88,15 @@
         });
       },
       renderWaiting(message) {
+        renderSignature = "";
         root.classList.remove("is-loading");
         root.querySelector('[data-role="status"]').textContent = "未绑定任务";
         root.querySelector('[data-role="content"]').innerHTML = `<div class="db-panel-empty">${escapeHtml(message)}</div>`;
       },
       renderTask(task) {
+        const signature = JSON.stringify(task);
+        if (signature === renderSignature) return;
+        renderSignature = signature;
         root.classList.remove("is-loading");
         const statusText = task.recall_state === "recalling"
           ? "正在下载视频" : (stateLabels[task.status] || task.status);

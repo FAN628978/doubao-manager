@@ -161,6 +161,33 @@ def test_dispatch_rejects_jobs_already_running(bridge):
     assert again.status_code == 409
 
 
+def test_dispatch_next_starts_oldest_other_pending_job(bridge):
+    """网页面板的“下一个任务”只放行最早待处理任务，并复用原调度流程。"""
+    with bridge["session"]() as client:
+        _set_mode(client, "manual")
+        current = client.post("/api/v1/videos/generations", json={
+            "prompt": "当前任务", "duration": 4,
+        }).json()
+        next_job = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "下一个任务", "duration": 4,
+        }).json()
+
+        response = client.post(
+            f"/api/v1/videos/generations/{current['id']}/dispatch-next"
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["job_id"] == next_job["id"]
+        untouched = client.get(
+            f"/api/v1/videos/generations/{current['id']}"
+        ).json()
+        started = _wait_status(client, next_job["id"], set(web_api.ACTIVE))
+        assert untouched["status"] == "queued"
+        assert not untouched["web"]["dispatched_at"]
+        assert started["status"] in web_api.ACTIVE
+        assert started["account_id"] == "account_1"
+        assert started["web"]["submit_mode"] == "auto"
+
+
 def test_setting_default_is_manual_and_persists(bridge):
     """新库默认处理方式为手动：建单只进待处理，点击执行后才进调度自动跑。"""
     client = bridge["client"]

@@ -41,7 +41,10 @@ def payload(token: str) -> dict:
         ],
         "confirmation_presets": [{"id": "preset_default", "name": "默认确认语", "text": "确认"}],
         "takeover": {"active": False, "can_takeover": True, "can_resume": False},
-        "manual_controls": [],
+        "manual_controls": [{
+            "key": "next_task", "label": "下一个任务", "enabled": True,
+            "reason": "", "confirm": "确认取出下一个任务？",
+        }],
     }
 
 
@@ -117,7 +120,7 @@ async def verify_context(playwright, executable: Path, profile: str, api_base: s
     first_text, second_text = await panel_text(first), await panel_text(second)
     assert "账号 A" in first_text and "job-a" in first_text and "账号 B" not in first_text
     assert "账号 B" in second_text and "job-b" in second_text and "账号 A" not in second_text
-    for label in ["提交素材", "确认发送", "发送确认语", "下载视频", "推送服务器"]:
+    for label in ["提交素材", "确认发送", "发送确认语", "下载视频", "推送服务器", "下一个任务"]:
         assert label in first_text
     if not restarted:
         expected_posts = [
@@ -125,8 +128,11 @@ async def verify_context(playwright, executable: Path, profile: str, api_base: s
             "/api/v1/videos/generations/job-a/send?confirm_send=true",
             "/api/v1/videos/generations/job-a/send-confirmation?confirm_send=true",
             "/api/v1/videos/generations/job-a/recall?force_redownload=true",
+            "/api/v1/videos/generations/job-a/dispatch-next",
         ]
-        for index, action in enumerate(["prepare", "send", "confirm", "download"], start=1):
+        for index, action in enumerate(
+            ["prepare", "send", "confirm", "download", "next_task"], start=1
+        ):
             await first.locator(
                 "#doubao-manager-extension-root"
             ).locator(f'[data-task-action="{action}"]').click()
@@ -168,6 +174,7 @@ async def check() -> None:
             "/api/v1/videos/generations/job-a/send?confirm_send=true",
             "/api/v1/videos/generations/job-a/send-confirmation?confirm_send=true",
             "/api/v1/videos/generations/job-a/recall?force_redownload=true",
+            "/api/v1/videos/generations/job-a/dispatch-next",
         ], "关闭扩展面板不应额外调用任务或浏览器关闭接口"
     finally:
         server.shutdown()

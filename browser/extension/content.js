@@ -13,6 +13,7 @@
 
     let bindingToken = "";
     let resolving = false;
+    let actionRunning = false;
     const send = message => new Promise(resolve => {
       chrome.runtime.sendMessage(message, response => resolve(
         chrome.runtime.lastError ? {ok: false, error: chrome.runtime.lastError.message} : response
@@ -21,7 +22,7 @@
     const sync = async () => {
       const marker = document.querySelector('meta[name="doubao-manager-task-binding"]');
       const token = String(marker?.content || "").trim();
-      if (!token || resolving) return;
+      if (!token || resolving || actionRunning) return;
       bindingToken = token;
       resolving = true;
       try {
@@ -36,33 +37,35 @@
       }
     };
     panel.setActionHandler(async (action, presetId) => {
-      const current = document.querySelector('meta[name="doubao-manager-task-binding"]')?.content || "";
-      if (!current || !bindingToken) return;
-      const resolved = await send({type: "task.resolve", bindingToken});
-      const task = resolved?.data;
-      const definition = [
-        ...(task?.actions || []), ...(task?.manual_controls || [])
-      ].find(item => item.key === action);
-      if (!resolved?.ok || !task || !definition?.enabled) {
-        panel.feedback(resolved?.error || definition?.reason || "当前操作不可执行", true);
-        await sync();
-        return;
-      }
-      if (definition.confirm && !await panel.confirmAction(definition.confirm)) return;
-      panel.setBusy(action, true);
-      panel.feedback(`正在执行：${definition.label}…`);
+      if (actionRunning) return;
+      actionRunning = true;
       try {
+        const current = document.querySelector('meta[name="doubao-manager-task-binding"]')?.content || "";
+        if (!current || !bindingToken) return;
+        const resolved = await send({type: "task.resolve", bindingToken});
+        const task = resolved?.data;
+        const definition = [
+          ...(task?.actions || []), ...(task?.manual_controls || [])
+        ].find(item => item.key === action);
+        if (!resolved?.ok || !task || !definition?.enabled) {
+          panel.feedback(resolved?.error || definition?.reason || "当前操作不可执行", true);
+          return;
+        }
+        if (definition.confirm && !await panel.confirmAction(definition.confirm)) return;
+        panel.setBusy(action, true);
+        panel.feedback(`正在执行：${definition.label}…`);
         const response = await send({
           type: "task.action", action, jobId: task.job_id, presetId
         });
         if (!response?.ok) throw new Error(response?.error || "操作失败");
-        panel.feedback(action === "download"
+        panel.feedback(response.data?.message || (action === "download"
           ? "下载任务已启动；完成后会自动归档，最后一个任务完成时将关闭账号窗口。"
-          : `${definition.label}操作成功`);
+          : `${definition.label}操作成功`));
       } catch (error) {
         panel.feedback(error.message || String(error), true);
       } finally {
         panel.setBusy(action, false);
+        actionRunning = false;
         await sync();
       }
     });

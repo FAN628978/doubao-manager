@@ -148,11 +148,37 @@ def test_extension_actions_call_existing_task_apis():
     expected = [
         "/dispatch", "/prepare-manual", "/send?confirm_send=true",
         "/send-confirmation?confirm_send=true", "/recall?force_redownload=true",
-        "/push-result",
+        "/push-result", "/dispatch-next",
     ]
     for endpoint in expected:
         assert endpoint in background
     assert "taskActions[message.action]" in background
+
+
+def test_extension_always_exposes_next_pending_control(tmp_path, monkeypatch):
+    bridge = build_bridge(tmp_path, monkeypatch)
+    token = asyncio.run(bridge.state.video_bind_task_page("job_0", BoundPage()))
+    with TestClient(bridge) as client:
+        empty = client.get(
+            "/api/v1/extension/tasks/resolve", params={"binding_token": token}
+        ).json()
+        control = next(
+            item for item in empty["manual_controls"] if item["key"] == "next_task"
+        )
+        assert control["label"] == "下一个任务"
+        assert control["enabled"] is False
+
+        with application.db() as connection:
+            connection.execute(
+                "UPDATE jobs SET status='queued' WHERE id='job_1'"
+            )
+        available = client.get(
+            "/api/v1/extension/tasks/resolve", params={"binding_token": token}
+        ).json()
+        control = next(
+            item for item in available["manual_controls"] if item["key"] == "next_task"
+        )
+        assert control["enabled"] is True
 
 
 def test_takeover_and_resume_affect_only_bound_task(tmp_path, monkeypatch):

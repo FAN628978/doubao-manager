@@ -1759,6 +1759,20 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             },
         ]
 
+    def next_pending_task(exclude_jobid: str = "") -> dict | None:
+        """Return the oldest web task that is still waiting for manual dispatch."""
+        with db() as c:
+            row = c.execute(
+                "SELECT j.id,j.account_id,j.project_id,j.episode_id,j.shot_id,"
+                "COALESCE(w.task_name,'') AS task_name "
+                "FROM jobs j JOIN video_web_jobs w ON w.job_id=j.id "
+                "WHERE j.status='queued' AND j.id<>? "
+                "AND COALESCE(w.dispatched_at,'')='' "
+                "ORDER BY j.created_at ASC,j.id ASC LIMIT 1",
+                (exclude_jobid,),
+            ).fetchone()
+        return dict(row) if row else None
+
     @app.get("/api/v1/extension/tasks/resolve", tags=["Chrome Extension"])
     async def resolve_extension_task(
         binding_token: str, x_api_key: Optional[str] = Header(None)
@@ -1789,6 +1803,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 account_name = item["account_id"]
         events_out = [dict(event) for event in reversed(recent)]
         last_event = events_out[-1] if events_out else {}
+        next_task = next_pending_task(item["id"])
         return {
             "job_id": item["id"],
             "account_id": item.get("account_id") or "",
@@ -1840,7 +1855,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     "reason": "提交结果未确认，必须先人工核验" if item["web"].get("error_code") == "SUBMISSION_UNCONFIRMED" else "",
                     "confirm": "确认使用现有“重新自动执行”功能恢复任务？系统会遵守原有额度和状态校验。",
                 }] if item["status"] in ("queued", MANUAL_WAIT, "needs_review", "failed") else [])
-            ),
+            ) + [{
+                "key": "next_task",
+                "label": "下一个任务",
+                "enabled": next_task is not None,
+                "reason": "" if next_task else "待处理队列中没有未放行任务",
+                "confirm": "确认从待处理队列取出下一个任务并进入调度？将保留该任务原有账号选择。",
+            }],
         }
 
     @app.post("/api/v1/videos/generations/{jobid}/start",tags=["Doubao Web Video"])
@@ -1880,6 +1901,30 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             req.submit_mode = "auto"
         start_worker(jobid, req, avoid_account_for(jobid))
         return detail(jobid)
+
+    @app.post("/api/v1/videos/generations/{jobid}/dispatch-next", tags=["Doubao Web Video"])
+    async def dispatch_next_job(jobid: str, x_api_key: Optional[str] = Header(None)):
+        """Dispatch the oldest untouched task while preserving its account selection."""
+        auth(x_api_key); ensure_schema(); detail(jobid)
+        next_task = next_pending_task(jobid)
+        if next_task is None:
+            raise HTTPException(409, "待处理队列中没有未放行任务")
+        started = await dispatch_job(next_task["id"], x_api_key)
+        task_name = (
+            next_task.get("task_name")
+            or " / ".join(filter(None, (
+                next_task.get("project_id"), next_task.get("episode_id"),
+                next_task.get("shot_id"),
+            )))
+            or next_task["id"]
+        )
+        return {
+            "ok": True,
+            "job_id": next_task["id"],
+            "task_name": task_name,
+            "account_id": started.get("account_id") or "",
+            "message": f"已取出下一个任务并进入调度：{task_name}",
+        }
 
     async def reset_generation(jobid: str, *, rematch_account: bool = False):
         """Reset an existing generation to queued without opening or submitting a page."""
