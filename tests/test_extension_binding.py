@@ -277,3 +277,20 @@ def test_closing_panel_never_calls_browser_close_api():
     assert 'root.classList.add("is-closed")' in panel
     assert "close-page" not in panel
     assert "close-window" not in panel
+
+
+def test_extension_resolve_honors_local_api_key(tmp_path, monkeypatch):
+    bridge = build_bridge(tmp_path, monkeypatch)
+    token = asyncio.run(bridge.state.video_bind_task_page("job_0", BoundPage()))
+    monkeypatch.setenv("DOUBAO_LOCAL_API_KEY", "extension-secret")
+    with TestClient(bridge) as client:
+        missing = client.get(
+            "/api/v1/extension/tasks/resolve", params={"binding_token": token}
+        )
+        accepted = client.get(
+            "/api/v1/extension/tasks/resolve",
+            params={"binding_token": token},
+            headers={"X-API-Key": "extension-secret"},
+        )
+        assert missing.status_code == 401
+        assert accepted.status_code == 200

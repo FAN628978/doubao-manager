@@ -357,6 +357,10 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     async def browser_slot(jobid: str):
         nonlocal active_processing
         async with processing_condition:
+            # Reconcile stale in-memory IDs before enforcing the limit. This matters
+            # after an application restart and in long-lived hosts that switch DBs;
+            # otherwise three vanished jobs can occupy every slot forever.
+            sync_processing_job_ids()
             # Recover jobs left in a machine-owned phase by a previous process. The
             # slot belongs to the task until it is archived/failed or handed to a human.
             processing_job_ids.update(persisted_processing_job_ids())

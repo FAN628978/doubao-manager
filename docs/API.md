@@ -225,6 +225,18 @@ POST /api/v1/videos/generations/{job_id}/recall
 
 自动下载、关联下载或复查下载成功后，若同一账号仍有其他任务，服务只关闭本任务绑定的网页；若没有其他任务，则关闭该账号的整个浏览器窗口。
 
+### Chrome 扩展接口
+
+扩展只通过 Service Worker 请求本地服务。设置 `DOUBAO_LOCAL_API_KEY` 时同样必须发送 `X-API-Key`，密钥保存在扩展私有存储，不注入豆包页面。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/v1/extension/tasks/resolve?binding_token=...` | 用标签页中的随机绑定令牌解析唯一任务，返回任务信息、最近事件、五个按钮状态及人工接管状态；未知令牌返回 404，不按 URL/标题猜测 |
+| POST | `/api/v1/videos/generations/{id}/takeover` | 人工接管当前任务；取消该任务的自动网页协程并保留页面和进度 |
+| POST | `/api/v1/videos/generations/{id}/resume-takeover` | 安全恢复：提交前恢复自动准备，已提交阶段只召回原结果，提交结果不明确时返回 409 |
+
+五个流程按钮继续调用既有接口：`/dispatch` 或 `/prepare-manual`、`/send?confirm_send=true`、`/send-confirmation?confirm_send=true`、`/recall?force_redownload=true`、`/push-result`。扩展不维护第二套任务状态机。
+
 ### 队列状态
 
 ```

@@ -13,6 +13,7 @@ def test_manifest_v3_targets_only_doubao_pages():
     manifest = json.loads((ROOT / "browser/extension/manifest.json").read_text(encoding="utf-8"))
     assert manifest["manifest_version"] == 3
     assert manifest["background"] == {"service_worker": "background.js", "type": "module"}
+    assert manifest["options_ui"] == {"page": "options.html", "open_in_tab": True}
     matches = manifest["content_scripts"][0]["matches"]
     assert matches == ["https://doubao.com/*", "https://www.doubao.com/*"]
     assert set(manifest["host_permissions"]) == {"http://127.0.0.1/*", "http://localhost/*"}
@@ -34,3 +35,6 @@ def test_extension_api_key_stays_in_service_worker_storage():
     assert 'chrome.storage.local.get(["apiBase", "apiKey"])' in api
     assert "X-API-Key" in api
     assert "apiKey" not in content
+    options = (ROOT / "browser/extension/options.js").read_text(encoding="utf-8")
+    assert "chrome.storage.local.set" in options
+    assert "127\\.0\\.0\\.1" in options and "localhost" in options

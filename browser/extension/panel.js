@@ -25,13 +25,16 @@
       <button class="db-panel-opener" type="button" title="打开任务面板">任务</button>
       <section class="db-panel-card" aria-label="豆包分镜任务控制面板">
         <header><div><b>分镜任务</b><span data-role="status">正在识别当前任务…</span></div>
-          <nav><button data-action="collapse" title="折叠">−</button><button data-action="close" title="关闭">×</button></nav>
+          <nav><button data-action="settings" title="扩展设置">⚙</button><button data-action="collapse" title="折叠">−</button><button data-action="close" title="关闭">×</button></nav>
         </header>
         <main data-role="content"><div class="db-panel-empty">正在连接本地管理服务…</div></main>
         <footer data-role="feedback">扩展不会影响后台自动任务</footer>
       </section>`;
     shadow.appendChild(root);
     const collapse = root.querySelector('[data-action="collapse"]');
+    root.querySelector('[data-action="settings"]').addEventListener("click", () => {
+      chrome.runtime.sendMessage({type: "settings.open"}, () => void chrome.runtime.lastError);
+    });
     chrome.storage.local.get(["panelClosed", "panelCollapsed"]).then(value => {
       root.classList.toggle("is-closed", Boolean(value.panelClosed));
       root.classList.toggle("is-collapsed", Boolean(value.panelCollapsed));

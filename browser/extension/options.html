@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>豆包分镜任务面板设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <header><span>项目 Chrome 扩展</span><h1>任务面板连接设置</h1><p>配置仅保存在扩展私有存储中，不会注入豆包网页。</p></header>
+    <form id="settings-form">
+      <label><span>本地服务地址</span><input id="api-base" type="url" required placeholder="http://127.0.0.1:8765"></label>
+      <label><span>API Key</span><input id="api-key" type="password" autocomplete="off" placeholder="未启用 DOUBAO_LOCAL_API_KEY 时留空"></label>
+      <div class="actions"><button type="submit">保存设置</button><output id="feedback"></output></div>
+    </form>
+  </main>
+  <script src="options.js"></script>
+</body>
+</html>

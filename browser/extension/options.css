@@ -1,0 +1,8 @@
+:root { color-scheme: dark; font: 14px/1.5 Inter, "Microsoft YaHei", sans-serif; background: #0d1119; color: #e5eaf3; }
+body { margin: 0; } main { width: min(620px, calc(100% - 40px)); margin: 70px auto; }
+header { margin-bottom: 26px; } header span { color: #818cf8; font-size: 12px; font-weight: 700; } h1 { margin: 5px 0; } p { margin: 0; color: #8491a5; }
+form { display: grid; gap: 18px; padding: 24px; border: 1px solid #252e3d; border-radius: 14px; background: #151b25; }
+label { display: grid; gap: 7px; } label span { color: #aeb8c8; font-size: 12px; }
+input { padding: 11px 12px; border: 1px solid #303a4b; border-radius: 8px; outline: none; color: #e5eaf3; background: #0f141d; } input:focus { border-color: #6674ed; }
+.actions { display: flex; align-items: center; gap: 12px; } button { padding: 9px 16px; border: 0; border-radius: 8px; color: white; background: #5b6cf9; cursor: pointer; font-weight: 700; }
+output { color: #94a3b8; } output.ok { color: #4ade80; } output.error { color: #fb7185; }

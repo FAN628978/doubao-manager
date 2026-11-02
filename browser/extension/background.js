@@ -26,6 +26,10 @@ const handlers = {
     const value = await updateSettings(message.value || {});
     return {apiBase: value.apiBase, hasApiKey: Boolean(value.apiKey)};
   },
+  async "settings.open"() {
+    await chrome.runtime.openOptionsPage();
+    return {opened: true};
+  },
   async "task.resolve"(message) {
     return localApi(`/api/v1/extension/tasks/resolve?binding_token=${encodeURIComponent(message.bindingToken || "")}`);
   },
