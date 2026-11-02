@@ -29,7 +29,6 @@
           <nav><button data-action="settings" title="扩展设置">⚙</button><button data-action="collapse" title="折叠">−</button><button data-action="close" title="关闭">×</button></nav>
         </header>
         <main data-role="content"><div class="db-panel-empty">正在连接本地管理服务…</div></main>
-        <aside class="db-panel-confirm" data-role="confirm"><span></span><div><button type="button" data-confirm="cancel">取消</button><button type="button" data-confirm="accept">确认执行</button></div></aside>
         <footer data-role="feedback">扩展不会影响后台自动任务</footer>
       </section>`;
     shadow.appendChild(root);
@@ -53,16 +52,6 @@
       collapse.textContent = root.classList.contains("is-collapsed") ? "+" : "−";
       chrome.storage.local.set({panelCollapsed: root.classList.contains("is-collapsed")});
     });
-    const confirmBox = root.querySelector('[data-role="confirm"]');
-    let confirmResolve = null;
-    const finishConfirmation = accepted => {
-      confirmBox.classList.remove("is-visible");
-      const resolve = confirmResolve;
-      confirmResolve = null;
-      if (resolve) resolve(accepted);
-    };
-    confirmBox.querySelector('[data-confirm="cancel"]').addEventListener("click", () => finishConfirmation(false));
-    confirmBox.querySelector('[data-confirm="accept"]').addEventListener("click", () => finishConfirmation(true));
     const bindTaskButtons = () => {
       root.querySelectorAll("[data-task-action]").forEach(button => {
         button.addEventListener("click", () => {
@@ -75,12 +64,6 @@
     return {
       root,
       setActionHandler(handler) { actionHandler = handler; },
-      confirmAction(message) {
-        if (confirmResolve) finishConfirmation(false);
-        confirmBox.querySelector("span").textContent = message || "确认执行当前操作？";
-        confirmBox.classList.add("is-visible");
-        return new Promise(resolve => { confirmResolve = resolve; });
-      },
       setBusy(action, busy) {
         root.querySelectorAll("[data-task-action]").forEach(button => {
           button.disabled = busy || button.dataset.baseDisabled === "true";

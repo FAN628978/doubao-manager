@@ -83,6 +83,10 @@ class Server:
         self.feedback_delay = 0
         self.feedback_error = False
         self.feedback_requests = 0
+        self.auto_dispatch_enabled = True
+        self.auto_dispatch_updates = []
+        self.submit_mode = "auto"
+        self.submit_mode_updates = []
         self.ignore_quota_check = False
         self.ignore_quota_updates = []
         self.claude_recovery_enabled = False
@@ -139,8 +143,28 @@ class Server:
                                             "archived": sum(1 for j in self.jobs if j["archived"]),
                                             "failed": 0, "queued": 0}))
         elif url.endswith("/api/settings/video-submit-mode"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.submit_mode = body.get("submit_mode") or "manual"
+                self.submit_mode_updates.append(self.submit_mode)
             await route.fulfill(status=200, content_type="application/json",
-                                body=_json({"submit_mode": "auto"}))
+                                body=_json({"submit_mode": self.submit_mode}))
+        elif url.endswith("/api/settings/auto-dispatch"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.auto_dispatch_enabled = bool(
+                    body.get("auto_dispatch_enabled")
+                )
+                self.auto_dispatch_updates.append(
+                    self.auto_dispatch_enabled
+                )
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json({
+                    "auto_dispatch_enabled": self.auto_dispatch_enabled,
+                }),
+            )
         elif url.endswith("/api/settings/processing-limit"):
             await route.fulfill(status=200, content_type="application/json",
                                 body=_json({"processing_limit": 3}))
@@ -416,6 +440,14 @@ def test_row_signature_covers_every_rendered_field():
     }
     missing = must_have - fields
     assert not missing, f"行签名缺少字段：{sorted(missing)}"
+
+
+def test_bulk_push_only_applies_to_unpushed_jobs():
+    source = (STATIC / "app.js").read_text(encoding="utf-8")
+    applies = source[source.index("function bulkApplies"):]
+    applies = applies[:applies.index("\n  function bulkActionJobs")]
+    assert "if(action==='push')" in applies
+    assert "Boolean(job.can_push_result)&&!job.result_pushed_at" in applies
 
 
 def test_task_open_close_actions_target_bound_page_not_account_window():
@@ -852,6 +884,37 @@ def test_mobile_buttons_do_not_clip_labels():
                         .map(button => button.textContent.trim())"""
                 )
                 assert clipped == [], clipped
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_automation_switches_are_saved_independently():
+    async def run():
+        server = Server()
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => openSubmitModeSettings()")
+                assert await page.is_checked("#autoDispatchSettingToggle")
+                assert await page.is_checked("#autoExecutionSettingToggle")
+
+                await page.click("#autoDispatchSettingToggle")
+                assert not await page.is_checked("#autoDispatchSettingToggle")
+                assert await page.is_checked("#autoExecutionSettingToggle")
+                await page.evaluate("() => $('submitModeForm').requestSubmit()")
+                await page.wait_for_function(
+                    "() => !document.getElementById('submitModeModal').classList.contains('show')"
+                )
+
+                assert server.auto_dispatch_updates == [False]
+                assert server.submit_mode_updates == ["auto"]
+                assert await page.evaluate(
+                    "() => state.autoDispatchEnabled"
+                ) is False
+                assert await page.evaluate("() => state.submitMode") == "auto"
             finally:
                 await browser.close()
 

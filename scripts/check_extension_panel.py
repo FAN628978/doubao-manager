@@ -151,18 +151,14 @@ async def verify_context(playwright, executable: Path, profile: str, api_base: s
             await first.locator(
                 "#doubao-manager-extension-root"
             ).locator(f'[data-task-action="{action}"]').click()
-            if action not in ("download", "push"):
-                await first.locator(
-                    "#doubao-manager-extension-root"
-                ).locator('[data-confirm="accept"]').click()
             for _ in range(50):
                 if len(POSTS) >= index:
                     break
                 await first.wait_for_timeout(100)
         assert POSTS == expected_posts, POSTS
-        assert not await first.locator(
+        assert await first.locator(
             "#doubao-manager-extension-root"
-        ).locator('[data-role="confirm"]').is_visible()
+        ).locator('[data-role="confirm"]').count() == 0
     if restarted:
         assert "job-a" in first_text
     await first.locator("#doubao-manager-extension-root").evaluate(

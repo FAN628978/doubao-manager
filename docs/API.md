@@ -90,8 +90,8 @@ Content-Type: multipart/form-data
 | `shot_name` | string | 可选 | 空 | 镜头名称，≤120 字 |
 | `task_name` | string | 可选 | 空 | 调用方显示名称，≤160 字；H3 使用统一格式 `项目 / 集数 / 镜头`，不参与生成幂等指纹 |
 | `idempotency_key` | string | 可选 | 空 | 幂等键，1～128 字；重复调用不会重复建单 |
-| `auto_start` | bool | 可选 | `true` | `true` 建单后直接进入调度；`false` 只进“待处理”，之后用 `/generations/{id}/dispatch` 放行（或 `/start`）。`submit_mode=manual` 时一律只排队，忽略本字段 |
-| `submit_mode` | string | 可选 | 本地设置（默认手动） | `auto`：建单后直接进入调度，脚本自动点击发送并自动确认；`manual`：建单后进入“待处理”队列，等操作者点“进入调度”（`/dispatch`）后转为 auto，全程自动执行；如需保留人工点击发送，改用 `/start`（或 `/prepare-manual`）准备页面，再 `/send`。H3 不传此字段，由本地管理台“任务模式设置”决定 |
+| `auto_start` | bool | 可选 | 本地“自动调度”设置 | `true` 建单后直接进入调度；`false` 只进“待处理”，之后用 `/generations/{id}/dispatch` 放行（或 `/start`）。为兼容旧调用，显式同时传 `submit_mode=manual` 时仍只排队 |
+| `submit_mode` | string | 可选 | 本地“自动执行”设置（默认关闭） | `auto`：进入调度后脚本自动点击发送并完成后续流程；`manual`：进入调度后只准备页面与素材，等待人工发送。`/dispatch` 只放行，不改变该值。H3 不传此字段，由本地管理台“任务设置”决定 |
 
 自动任务下载归档后，如提交时同时提供 `result_push_url` 和 `result_push_token`，会自动把视频推送回服务器；推送失败只记录 `delivery_state=failed` 和下次建议重试时间，任务仍保持 `downloaded` 并保留本地归档视频，不会退回 `needs_review`。人工任务仍保留分步处理和手动推送流程。
 
@@ -159,7 +159,7 @@ H3/外部系统 POST 建单（模式由本地设置）        → status=queued�
 
 要点：
 
-- **manual 任务创建时始终是 `queued`**，即使 `auto_start=true`。显式调用 `/dispatch`（“进入调度”）等于授权自动执行：任务落库转为 `auto`，准备、发送、确认、下载全程交给机器；如要保留人工点击发送，用 `/start`（或 `/prepare-manual`）准备页面，再显式调用 `/send?confirm_send=true` 才会点击发送。这样外部调度器不会在未确认时自动发送。
+- 本地“自动调度”和“自动执行”是独立设置：前者决定是否立即放行，后者决定放行后自动发送还是等待人工发送。显式调用 `/dispatch`（“进入调度”）只放行，不会把 `manual` 任务改成 `auto`。为兼容旧 API 调用，调用方显式传 `submit_mode=manual` 时即使同时传 `auto_start=true` 仍先进入 `queued`；本地设置则支持“自动调度 + 人工发送”组合。
 - **重新发送沿用原任务 ID**：`/resend` 不会新建 job，旧的 `web_page_url`、`result_card_index` 和结果绑定会被清空，重新准备页面。之后 `/recall` 只认这次新页面，因此“关联下载以重新发送的网页为准”。同一天内重发复用已有额度占用，不重复占用。
 - **人工判定失败是最终裁决**：`/mark-failed` 把任务置为 `failed`、错误码 `MANUAL_CONFIRMED_FAILED`，并释放额度占用；H3 收到该错误码后显示失败、停止等待。判定后仍可 `/resend`，但 H3 需要手动召回才会恢复轮询。
 - `manual` 任务的 `needs_review` / 普通 `failed` 在 H3 侧映射为 `processing`（最长 7 天），等待本机操作者重新发送或关联下载；只有 `MANUAL_CONFIRMED_FAILED` 才按失败处理。自动任务仍按失败处理。H3 始终轮询原 `job_id`，最终从同一个任务取回视频。
@@ -169,7 +169,7 @@ H3/外部系统 POST 建单（模式由本地设置）        → status=queued�
 - 管理台“下载视频”使用 `/recall?force_redownload=true`；即使任务已经归档，也会重新从任务页面定位并下载结果、成功后覆盖旧文件。重新下载不会改变任务状态，仍保持 `downloaded`；进度可通过 `GET /api/jobs` 的 `recall_state=recalling` 观察。重新下载失败时保留原归档文件和 `downloaded` 状态。
 - 如果页面仍停在“确认生成”提示，`recall` 返回 `needs_review` / `CONFIRM_REQUIRED`；先在网页完成确认或使用“发送确认语”，再点一次“关联下载”。
 - 归档成功后 `result_source=manual_web_link`；额度从占用转为已消耗。若始终取不回，可用管理台“复查归档”手工导入 MP4，`result_source=human_verified_upload`。
-- 想恢复全自动：在本地管理台把“任务模式设置”切换为“自动执行”。H3 保持只提交任务内容；本地服务接收后自动执行，成功归档后自动回推服务器。
+- 想恢复全自动：在本地管理台同时开启“自动调度”和“自动执行”。H3 保持只提交任务内容；本地服务接收后自动执行，成功归档后自动回推服务器。
 
 ---
 

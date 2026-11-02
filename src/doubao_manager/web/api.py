@@ -42,6 +42,7 @@ from .config import (
     TERMINAL,
 )
 from .models import (
+    AutoDispatchSetting,
     ClaudeRecoverySetting,
     ConfirmationPresetInput,
     ConfirmationSendRequest,
@@ -470,6 +471,22 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         value = (row["value"] if row else "manual").strip().lower()
         return value if value in ("auto", "manual") else "manual"
 
+    def local_auto_dispatch_enabled() -> bool:
+        with db() as c:
+            row = c.execute(
+                "SELECT value FROM local_settings WHERE key='auto_dispatch_enabled'"
+            ).fetchone()
+        if row is None:
+            # Before this setting existed, auto mode enabled both behaviors.
+            return local_submit_mode() == "auto"
+        return str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
+
+    def has_auto_dispatch_setting() -> bool:
+        with db() as c:
+            return c.execute(
+                "SELECT 1 FROM local_settings WHERE key='auto_dispatch_enabled'"
+            ).fetchone() is not None
+
     def local_ignore_quota_check() -> bool:
         with db() as c:
             row = c.execute(
@@ -501,6 +518,22 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 (payload.submit_mode,),
             )
         return {"submit_mode": payload.submit_mode}
+
+    @app.get("/api/settings/auto-dispatch", tags=["Local Settings"])
+    async def get_auto_dispatch_setting():
+        ensure_schema()
+        return {"auto_dispatch_enabled": local_auto_dispatch_enabled()}
+
+    @app.put("/api/settings/auto-dispatch", tags=["Local Settings"])
+    async def update_auto_dispatch_setting(payload: AutoDispatchSetting):
+        ensure_schema()
+        with db() as c:
+            c.execute(
+                "INSERT INTO local_settings(key,value) VALUES('auto_dispatch_enabled',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("1" if payload.auto_dispatch_enabled else "0",),
+            )
+        return {"auto_dispatch_enabled": payload.auto_dispatch_enabled}
 
     @app.get("/api/settings/processing-limit", tags=["Local Settings"])
     async def get_processing_limit():
@@ -1539,10 +1572,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     def create_generation(req: VideoRequest, *, retry_of_job_id: str = "", avoid_account_id: str = ""):
         """Persist a generation request and optionally start it. Shared by the JSON and multipart entry points."""
+        uses_local_defaults = req.submit_mode is None
         req.submit_mode = req.submit_mode or local_submit_mode()
-        # 人工发送必须由本机操作者显式启动：即使调用方传 auto_start=true 也只建单排队，
-        # 防止 H3/外部调度器在用户不在电脑前时替人完成网页发送。
-        if req.submit_mode == "manual":
+        if uses_local_defaults and "auto_start" not in req.model_fields_set:
+            req.auto_start = local_auto_dispatch_enabled()
+        # 兼容旧调用约定：显式指定 manual 的调用仍先排队；本机默认设置则允许
+        # “自动调度 + 人工发送”的独立组合。
+        if req.submit_mode == "manual" and not uses_local_defaults:
             req.auto_start = False
         # 建单阶段不分配账号：调用方显式给了账号就沿用，否则任务以“待分配账号”进入待处理，
         # 真正开始执行前（start_worker）才挑选账号并预占额度，避免账号和额度被排队任务提前占住。
@@ -1902,13 +1938,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     @app.post("/api/v1/videos/generations/{jobid}/dispatch", tags=["Doubao Web Video"])
     async def dispatch_job(jobid: str, x_api_key: Optional[str] = Header(None)):
-        """把待处理任务放行进入调度队列，之后全程自动执行。
-
-        手动模式下建单只入“待处理”，不占用调度名额；操作者点“进入调度”即视为
-        授权自动执行：任务的处理方式随之转为 auto，从准备素材到点击发送全部交给
-        机器（仍遵守正在处理队列上限）。想保留人工点击发送的半自动流程，请走
-        prepare-manual / start 准备页面后再 send。
-        """
+        """把待处理任务放行进入调度队列，保留任务既定的执行方式。"""
         auth(x_api_key); ensure_schema()
         item = detail(jobid)
         if item["status"] not in ("queued", "ready"):
@@ -1920,12 +1950,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         resolve_assets(req)
         if req.account_id and get_account(req.account_id)["archived"]:
             raise HTTPException(409, "账号已归档")
-        # 点击“进入调度”即授权自动执行：把处理方式落库为 auto，准备、发送、确认、
-        # 下载全程交给机器，结果推送等下游逻辑也能按 auto 一致地工作。
-        if (req.submit_mode or "auto") != "auto":
-            with db() as c:
-                c.execute("UPDATE video_web_jobs SET submit_mode='auto' WHERE job_id=?", (jobid,))
-            req.submit_mode = "auto"
+        # 调度只负责放行，不覆盖建单时保存的自动/人工执行方式。
         start_worker(jobid, req, avoid_account_for(jobid))
         return detail(jobid)
 
@@ -2721,6 +2746,10 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         account_id = item.get("account_id")
         if not account_id:
             raise HTTPException(409, "任务所属账号已删除")
+        # 人工确认后仍要在当前会话观察生成进度；取消准备阶段挂起的空闲关窗任务。
+        idle_close = idle_close_tasks.pop(account_id, None)
+        if idle_close is not None and not idle_close.done():
+            idle_close.cancel()
         if item["status"] not in (MANUAL_WAIT, "confirming", "needs_review"):
             raise HTTPException(409, "当前任务状态不允许补发确认语，禁止重复确认或重复生成")
         if bool(account_value(get_account(account_id), "paused", 0)):
@@ -3944,15 +3973,16 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         sit in ``queued`` until a human clicks again or the service restarts.
         """
         now = ts()
+        legacy_mode = not has_auto_dispatch_setting()
         with db() as c:
             rows = c.execute(
                 "SELECT j.id FROM jobs j JOIN video_web_jobs w ON j.id=w.job_id "
                 "WHERE j.status='queued' "
-                "AND COALESCE(w.submit_mode,'auto')='auto' "
-                "AND COALESCE(w.dispatched_at,'')!='' "
+                "AND (COALESCE(w.dispatched_at,'')!='' "
+                "OR (? AND COALESCE(w.submit_mode,'auto')='auto')) "
                 "AND COALESCE(w.next_retry_at,'') <= ? "
                 "ORDER BY j.created_at ASC, j.id ASC LIMIT 50",
-                (now,),
+                (int(legacy_mode), now),
             ).fetchall()
         started = 0
         for row in rows:
@@ -4081,13 +4111,17 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     app.state.video_stall_watchdog_once = stall_watchdog_once
 
     def resume_queued_jobs() -> int:
-        """Restart persisted automatic jobs; manual jobs still require a person."""
+        """Restart dispatched jobs, with a fallback for pre-setting auto jobs."""
+        legacy_mode = not has_auto_dispatch_setting()
         with db() as c:
             rows = c.execute(
                 "SELECT j.id,j.account_id FROM jobs j "
                 "JOIN video_web_jobs w ON j.id=w.job_id "
-                "WHERE j.status='queued' AND COALESCE(w.submit_mode,'auto')='auto' "
-                "ORDER BY j.created_at ASC"
+                "WHERE j.status='queued' "
+                "AND (COALESCE(w.dispatched_at,'')!='' "
+                "OR (? AND COALESCE(w.submit_mode,'auto')='auto')) "
+                "ORDER BY j.created_at ASC",
+                (int(legacy_mode),),
             ).fetchall()
 
         started = 0
@@ -4163,7 +4197,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         idempotency_key: Optional[str] = Form(default=None),
         result_push_url: Optional[str] = Form(default=None),
         result_push_token: Optional[str] = Form(default=None),
-        auto_start: bool = Form(default=True),
+        auto_start: Optional[bool] = Form(default=None),
         submit_mode: Optional[str] = Form(default=None),
         reference: Optional[List[UploadFile]] = File(default=None),
         first_frame: Optional[UploadFile] = File(default=None),
@@ -4202,7 +4236,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                                episode_id=episode_name.strip() or episode_id,
                                shot_id=shot_name.strip() or shot_id, task_name=task_name,
                                first_frame_asset_id=first_id, last_frame_asset_id=last_id,
-                               reference_asset_ids=ref_ids, idempotency_key=idempotency_key, auto_start=auto_start,
+                               reference_asset_ids=ref_ids, idempotency_key=idempotency_key,
+                               auto_start=(local_auto_dispatch_enabled() if auto_start is None else auto_start),
                                submit_mode=submit_mode, result_push_url=result_push_url,
                                result_push_token=result_push_token)
         except ValidationError as e:

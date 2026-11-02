@@ -51,7 +51,6 @@
           panel.feedback(resolved?.error || definition?.reason || "当前操作不可执行", true);
           return;
         }
-        if (definition.confirm && !await panel.confirmAction(definition.confirm)) return;
         panel.setBusy(action, true);
         panel.feedback(`正在执行：${definition.label}…`);
         const response = await send({

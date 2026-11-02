@@ -143,6 +143,13 @@ def test_content_script_uses_only_explicit_binding_marker():
     assert 'meta[name="doubao-manager-task-binding"]' in content
     assert "document.title" not in content
     assert "location.href" not in content
+    assert "confirmAction" not in content
+
+
+def test_extension_panel_actions_do_not_render_confirmation_prompt():
+    panel = (ROOT / "browser/extension/panel.js").read_text(encoding="utf-8")
+    assert "确认执行" not in panel
+    assert "data-role=\"confirm\"" not in panel
 
 
 def test_extension_actions_call_existing_task_apis():

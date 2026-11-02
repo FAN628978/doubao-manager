@@ -1071,6 +1071,21 @@ def test_send_confirmation_sends_and_reserves_quota(tmp_path, monkeypatch):
                             base_dir=tmp_path, downloads_dir=tmp_path / 'videos',
                             serialize=application.job_row)
     with TestClient(app2) as client:
+        idle_close_cancelled = []
+
+        async def schedule_idle_close():
+            async def pending_close():
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    idle_close_cancelled.append(True)
+                    raise
+
+            app2.state.video_idle_close_tasks['acc_send'] = asyncio.create_task(
+                pending_close()
+            )
+
+        client.portal.call(schedule_idle_close)
         preset = client.post('/api/v1/videos/confirmation-presets', json={
             'name': '当前参数', 'text': '确认采用当前参数并开始生成。',
         }).json()
@@ -1080,6 +1095,8 @@ def test_send_confirmation_sends_and_reserves_quota(tmp_path, monkeypatch):
         assert r.json()['how'] == 'composer:确认采用当前参数并开始生成。'
         assert r.json()['preset_id'] == preset['id']
         assert not page.closed
+        assert idle_close_cancelled == [True]
+        assert 'acc_send' not in app2.state.video_idle_close_tasks
         duplicate = client.post(
             '/api/v1/videos/generations/job_send/send-confirmation?confirm_send=true',
             json={'preset_id': preset['id']},

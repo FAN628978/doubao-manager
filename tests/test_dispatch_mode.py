@@ -1,4 +1,4 @@
-"""新任务默认处理方式：手动（默认）先进待处理，点“进入调度”后转为自动、全程执行；自动则直接进调度。
+"""新任务的自动调度与自动执行设置可独立组合。
 
 只验证建单与放行语义，不启动浏览器：用假的 perform 模拟执行阶段。
 """
@@ -90,6 +90,14 @@ def _set_mode(client, mode):
     assert response.status_code == 200, response.text
 
 
+def _set_auto_dispatch(client, enabled):
+    response = client.put(
+        "/api/settings/auto-dispatch",
+        json={"auto_dispatch_enabled": enabled},
+    )
+    assert response.status_code == 200, response.text
+
+
 def _wait_status(client, job_id, wanted, timeout=10.0):
     deadline = time.time() + timeout
     state = {}
@@ -119,14 +127,13 @@ def test_auto_mode_hands_new_job_to_scheduler_immediately(bridge):
 
 
 def test_manual_mode_waits_in_pending_until_dispatched(bridge):
-    """手动：建单只进待处理；点“进入调度”后转为自动并全程执行（含点击发送）。"""
+    """关闭自动调度时先待处理；放行后仍保留人工执行方式。"""
     client = bridge["client"]
     _set_mode(client, "manual")
+    _set_auto_dispatch(client, False)
 
     created = client.post("/api/v1/videos/generations", json={
         "prompt": "手动任务", "duration": 4,
-        # 即使调用方要求自动开始，手动模式也必须先停在待处理。
-        "auto_start": True,
     })
     assert created.status_code == 202, created.text
     job = created.json()
@@ -143,9 +150,9 @@ def test_manual_mode_waits_in_pending_until_dispatched(bridge):
     assert dispatched.status_code == 200, dispatched.text
     state = _wait_status(client, job["id"], set(web_api.ACTIVE))
     assert state["status"] in web_api.ACTIVE, state
-    # 点击执行即授权自动执行：任务落库转为 auto，执行阶段也按 auto 全程跑（含发送）。
-    assert state["web"]["submit_mode"] == "auto"
-    assert bridge["started"] == ["auto"]
+    # 调度与执行方式互不覆盖：放行后仍停在人工发送步骤。
+    assert state["web"]["submit_mode"] == "manual"
+    assert bridge["started"] == ["manual"]
 
 
 def test_dispatch_rejects_jobs_already_running(bridge):
@@ -185,15 +192,69 @@ def test_dispatch_next_starts_oldest_other_pending_job(bridge):
         assert not untouched["web"]["dispatched_at"]
         assert started["status"] in web_api.ACTIVE
         assert started["account_id"] == "account_1"
-        assert started["web"]["submit_mode"] == "auto"
+        assert started["web"]["submit_mode"] == "manual"
 
 
 def test_setting_default_is_manual_and_persists(bridge):
-    """新库默认处理方式为手动：建单只进待处理，点击执行后才进调度自动跑。"""
+    """新库的自动调度与自动执行默认均关闭，且可分别持久化。"""
     client = bridge["client"]
     assert client.get("/api/settings/video-submit-mode").json()["submit_mode"] == "manual"
+    assert client.get("/api/settings/auto-dispatch").json()["auto_dispatch_enabled"] is False
     _set_mode(client, "auto")
+    _set_auto_dispatch(client, True)
     assert client.get("/api/settings/video-submit-mode").json()["submit_mode"] == "auto"
+    assert client.get("/api/settings/auto-dispatch").json()["auto_dispatch_enabled"] is True
+
+
+def test_auto_dispatch_can_prepare_manual_execution(bridge):
+    client = bridge["client"]
+    _set_mode(client, "manual")
+    _set_auto_dispatch(client, True)
+
+    created = client.post("/api/v1/videos/generations", json={
+        "prompt": "自动调度但人工发送", "duration": 4,
+    })
+    assert created.status_code == 202, created.text
+    state = _wait_status(client, created.json()["id"], set(web_api.ACTIVE))
+    assert state["status"] in web_api.ACTIVE
+    assert state["web"]["submit_mode"] == "manual"
+    assert bridge["started"] == ["manual"]
+
+
+def test_manual_dispatch_can_start_automatic_execution(bridge):
+    client = bridge["client"]
+    _set_mode(client, "auto")
+    _set_auto_dispatch(client, False)
+
+    created = client.post("/api/v1/videos/generations", json={
+        "prompt": "手动调度但自动执行", "duration": 4,
+    })
+    assert created.status_code == 202, created.text
+    job = created.json()
+    assert job["status"] == "queued"
+    assert job["web"]["submit_mode"] == "auto"
+    time.sleep(0.1)
+    assert bridge["started"] == []
+
+    response = client.post(f"/api/v1/videos/generations/{job['id']}/dispatch")
+    assert response.status_code == 200, response.text
+    state = _wait_status(client, job["id"], set(web_api.ACTIVE))
+    assert state["status"] in web_api.ACTIVE
+    assert state["web"]["submit_mode"] == "auto"
+    assert bridge["started"] == ["auto"]
+
+
+def test_undispatched_auto_job_is_not_resumed_after_setting_saved(bridge):
+    with bridge["session"]() as client:
+        _set_mode(client, "auto")
+        _set_auto_dispatch(client, False)
+        job = client.post("/api/v1/videos/generations", json={
+            "prompt": "关闭自动调度后等待人工放行", "duration": 4,
+        }).json()
+        assert job["status"] == "queued"
+        assert not job["web"]["dispatched_at"]
+        assert _resume_in_loop(client) == 0
+        assert bridge["started"] == []
 
 def test_pending_job_row_offers_dispatch_button():
     """待处理任务的首按钮是“进入调度”，调用 dispatch 接口而不是直接准备页面。"""

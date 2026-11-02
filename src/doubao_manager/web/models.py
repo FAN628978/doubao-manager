@@ -61,6 +61,10 @@ class SubmitModeSetting(BaseModel):
     submit_mode: Literal["auto", "manual"]
 
 
+class AutoDispatchSetting(BaseModel):
+    auto_dispatch_enabled: bool
+
+
 class ProcessingLimitSetting(BaseModel):
     processing_limit: int = Field(ge=0)
 
