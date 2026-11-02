@@ -48,7 +48,7 @@
         await sync();
         return;
       }
-      if (definition.confirm && !confirm(definition.confirm)) return;
+      if (definition.confirm && !await panel.confirmAction(definition.confirm)) return;
       panel.setBusy(action, true);
       panel.feedback(`正在执行：${definition.label}…`);
       try {

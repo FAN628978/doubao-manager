@@ -119,6 +119,28 @@ async def verify_context(playwright, executable: Path, profile: str, api_base: s
     assert "账号 B" in second_text and "job-b" in second_text and "账号 A" not in second_text
     for label in ["提交素材", "确认发送", "发送确认语", "下载视频", "推送服务器"]:
         assert label in first_text
+    if not restarted:
+        expected_posts = [
+            "/api/v1/videos/generations/job-a/prepare-manual",
+            "/api/v1/videos/generations/job-a/send?confirm_send=true",
+            "/api/v1/videos/generations/job-a/send-confirmation?confirm_send=true",
+            "/api/v1/videos/generations/job-a/recall?force_redownload=true",
+        ]
+        for index, action in enumerate(["prepare", "send", "confirm", "download"], start=1):
+            await first.locator(
+                "#doubao-manager-extension-root"
+            ).locator(f'[data-task-action="{action}"]').click()
+            await first.locator(
+                "#doubao-manager-extension-root"
+            ).locator('[data-confirm="accept"]').click()
+            for _ in range(50):
+                if len(POSTS) >= index:
+                    break
+                await first.wait_for_timeout(100)
+        assert POSTS == expected_posts, POSTS
+        assert await first.locator(
+            "#doubao-manager-extension-root"
+        ).locator('[data-task-action="push"]').is_disabled()
     if restarted:
         assert "job-a" in first_text
     await first.locator("#doubao-manager-extension-root").evaluate(
@@ -141,7 +163,12 @@ async def check() -> None:
             async with async_playwright() as playwright:
                 await verify_context(playwright, executable, profile, api_base)
                 await verify_context(playwright, executable, profile, api_base, restarted=True)
-        assert not POSTS, "关闭扩展面板不应调用任何任务或浏览器关闭接口"
+        assert POSTS == [
+            "/api/v1/videos/generations/job-a/prepare-manual",
+            "/api/v1/videos/generations/job-a/send?confirm_send=true",
+            "/api/v1/videos/generations/job-a/send-confirmation?confirm_send=true",
+            "/api/v1/videos/generations/job-a/recall?force_redownload=true",
+        ], "关闭扩展面板不应额外调用任务或浏览器关闭接口"
     finally:
         server.shutdown()
         server.server_close()

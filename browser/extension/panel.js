@@ -28,6 +28,7 @@
           <nav><button data-action="settings" title="扩展设置">⚙</button><button data-action="collapse" title="折叠">−</button><button data-action="close" title="关闭">×</button></nav>
         </header>
         <main data-role="content"><div class="db-panel-empty">正在连接本地管理服务…</div></main>
+        <aside class="db-panel-confirm" data-role="confirm"><span></span><div><button type="button" data-confirm="cancel">取消</button><button type="button" data-confirm="accept">确认执行</button></div></aside>
         <footer data-role="feedback">扩展不会影响后台自动任务</footer>
       </section>`;
     shadow.appendChild(root);
@@ -51,15 +52,34 @@
       collapse.textContent = root.classList.contains("is-collapsed") ? "+" : "−";
       chrome.storage.local.set({panelCollapsed: root.classList.contains("is-collapsed")});
     });
-    root.addEventListener("click", event => {
-      const button = event.target.closest("[data-task-action]");
-      if (!button || button.disabled || !actionHandler) return;
-      const preset = root.querySelector('[data-role="confirmation-preset"]');
-      actionHandler(button.dataset.taskAction, preset?.value || "", button);
-    });
+    const confirmBox = root.querySelector('[data-role="confirm"]');
+    let confirmResolve = null;
+    const finishConfirmation = accepted => {
+      confirmBox.classList.remove("is-visible");
+      const resolve = confirmResolve;
+      confirmResolve = null;
+      if (resolve) resolve(accepted);
+    };
+    confirmBox.querySelector('[data-confirm="cancel"]').addEventListener("click", () => finishConfirmation(false));
+    confirmBox.querySelector('[data-confirm="accept"]').addEventListener("click", () => finishConfirmation(true));
+    const bindTaskButtons = () => {
+      root.querySelectorAll("[data-task-action]").forEach(button => {
+        button.addEventListener("click", () => {
+          if (button.disabled || !actionHandler) return;
+          const preset = root.querySelector('[data-role="confirmation-preset"]');
+          actionHandler(button.dataset.taskAction, preset?.value || "", button);
+        });
+      });
+    };
     return {
       root,
       setActionHandler(handler) { actionHandler = handler; },
+      confirmAction(message) {
+        if (confirmResolve) finishConfirmation(false);
+        confirmBox.querySelector("span").textContent = message || "确认执行当前操作？";
+        confirmBox.classList.add("is-visible");
+        return new Promise(resolve => { confirmResolve = resolve; });
+      },
       setBusy(action, busy) {
         root.querySelectorAll("[data-task-action]").forEach(button => {
           button.disabled = busy || button.dataset.baseDisabled === "true";
@@ -111,6 +131,7 @@
             <label class="db-confirm-preset"><span>确认语预设</span><select data-role="confirmation-preset">${presets}</select></label>
           </section>
           <details class="db-task-events" ${error ? "open" : ""}><summary>最近操作记录</summary><ul>${events || "<li><span>暂无操作记录</span></li>"}</ul></details>`;
+        bindTaskButtons();
         this.feedback(task.recall_state === "recalling"
           ? "正在从当前任务绑定的网页下载并校验视频…"
           : (task.last_action || "任务状态已同步"));
