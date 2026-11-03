@@ -202,7 +202,7 @@ def test_auto_restart_rematches_to_fresh_account(
     with application.db() as conn:
         old_quota = web_api.quota_summary(conn, "account_1")
         new_quota = web_api.quota_summary(conn, "account_2")
-    assert old_quota["consumed_seconds"] == 4
+    assert old_quota["consumed_seconds"] == 0
     assert old_quota["reserved_seconds"] == 0
     assert new_quota["consumed_seconds"] == 4
 

@@ -1057,20 +1057,11 @@ async def bulk_delete_jobs(payload: JobBulkDelete):
                     "INSERT OR IGNORE INTO account_quota(account_id,day,reserved_seconds,consumed_seconds) VALUES(?,?,0,0)",
                     (account_id, day),
                 )
-                if row_by_id[web["job_id"]]["status"] in ("queued", "ready", "failed"):
-                    conn.execute(
-                        "UPDATE account_quota SET reserved_seconds=MAX(0,reserved_seconds-?) WHERE account_id=? AND day=?",
-                        (duration, account_id, day),
-                    )
-                else:
-                    # 人工处理中断/需复核的任务可能已经消耗官网额度，删除时按已消耗保守记账。
-                    conn.execute(
-                        """UPDATE account_quota
-                           SET reserved_seconds=MAX(0,reserved_seconds-?),
-                               consumed_seconds=consumed_seconds+?
-                           WHERE account_id=? AND day=?""",
-                        (duration, duration, account_id, day),
-                    )
+                # 未成功下载的任务删除时只释放预占，不因状态不确定而扣费。
+                conn.execute(
+                    "UPDATE account_quota SET reserved_seconds=MAX(0,reserved_seconds-?) WHERE account_id=? AND day=?",
+                    (duration, account_id, day),
+                )
         conn.execute(f"DELETE FROM video_web_events WHERE job_id IN ({placeholders})", job_ids)
         conn.execute(f"DELETE FROM video_web_jobs WHERE job_id IN ({placeholders})", job_ids)
         conn.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", job_ids)

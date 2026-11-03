@@ -622,6 +622,10 @@ def test_bulk_delete_jobs_and_delete_videos_permanently(tmp_path, monkeypatch):
             assert conn.execute(
                 'SELECT reserved_seconds FROM account_quota WHERE account_id=?', (account,)
             ).fetchone()[0] == 4
+            conn.execute("UPDATE jobs SET status='needs_review' WHERE id=?", (web,))
+            conn.execute(
+                "UPDATE video_web_jobs SET quota_state='unknown' WHERE job_id=?", (web,)
+            )
 
         response = client.post('/api/jobs/bulk-delete', json={'job_ids': [plain, web, plain]})
         assert response.status_code == 200, response.text
@@ -635,6 +639,9 @@ def test_bulk_delete_jobs_and_delete_videos_permanently(tmp_path, monkeypatch):
             assert conn.execute('SELECT COUNT(*) FROM video_web_events').fetchone()[0] == 0
             assert conn.execute(
                 'SELECT reserved_seconds FROM account_quota WHERE account_id=?', (account,)
+            ).fetchone()[0] == 0
+            assert conn.execute(
+                'SELECT consumed_seconds FROM account_quota WHERE account_id=?', (account,)
             ).fetchone()[0] == 0
 
 

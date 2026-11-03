@@ -571,6 +571,68 @@ def test_incremental_update_is_not_order_sensitive():
     assert "if(!list.length)return false" in body
 
 
+def test_archived_videos_lazy_load_near_viewport_only():
+    async def run():
+        server = Server()
+        server.jobs = [
+            _job(
+                f"job_{index}",
+                video_path=f"job_{index}.mp4",
+                archived=True,
+                archived_at="2026-02-02T00:00:00+00:00",
+            )
+            for index in range(120)
+        ]
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.set_viewport_size({"width": 1280, "height": 720})
+                await page.evaluate(
+                    "() => {switchView('jobs');setJobSection('archived')}"
+                )
+                await page.wait_for_function(
+                    "() => document.querySelectorAll('#jobsTable video').length === 120"
+                )
+                initial = await page.evaluate(
+                    """() => {
+                        const videos = [...document.querySelectorAll('#jobsTable video')];
+                        return {
+                            total: videos.length,
+                            loaded: videos.filter(video => video.hasAttribute('src')).length,
+                            lastLoaded: videos.at(-1).hasAttribute('src'),
+                        };
+                    }"""
+                )
+                assert initial["total"] == 120
+                assert initial["loaded"] < initial["total"]
+                assert initial["lastLoaded"] is False
+
+                await page.locator("#jobsTable video").first.scroll_into_view_if_needed()
+                await page.wait_for_function(
+                    "() => document.querySelector('#jobsTable video').hasAttribute('src')"
+                )
+                await page.locator("#jobsTable video").last.scroll_into_view_if_needed()
+                await page.wait_for_timeout(300)
+                after_scroll = await page.evaluate(
+                    """() => {
+                        const videos = [...document.querySelectorAll('#jobsTable video')];
+                        return {
+                            firstLoaded: videos[0].hasAttribute('src'),
+                            lastLoaded: videos.at(-1).hasAttribute('src'),
+                            loaded: videos.filter(video => video.hasAttribute('src')).length,
+                        };
+                    }"""
+                )
+                assert after_scroll["firstLoaded"] is False
+                assert after_scroll["lastLoaded"] is True
+                assert after_scroll["loaded"] < initial["total"]
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
 def test_search_focus_does_not_freeze_auto_refresh_source():
     """搜索框聚焦不应成为自动刷新暂停条件。"""
     from pathlib import Path

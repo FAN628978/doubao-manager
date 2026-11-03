@@ -288,8 +288,8 @@ def test_resend_same_job_links_latest_page_and_keeps_job_id(tmp_path, monkeypatc
                         break
                     await asyncio.sleep(0.05)
                 assert page_b.is_closed()
-                # 两次人工发送产生了两条视频，按两次生成结算额度。
-                assert state['quota']['consumed_seconds'] == 2
+                # 不按发送次数扣费；最终视频成功下载后只结算一次。
+                assert state['quota']['consumed_seconds'] == 1
                 assert state['quota']['reserved_seconds'] == 0
 
                 again = await client.post(
@@ -369,7 +369,7 @@ def test_manual_fail_verdict_is_visible_to_h3_and_releases_quota(tmp_path, monke
     asyncio.run(run())
 
 
-def test_restart_during_manual_send_keeps_quota_unknown_and_requires_review(tmp_path, monkeypatch):
+def test_restart_during_manual_send_releases_quota_until_download(tmp_path, monkeypatch):
     monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'manual-restart.sqlite3')
     application.init_db()
     web_api.recover_interrupted_jobs(application.db)
@@ -393,6 +393,7 @@ def test_restart_during_manual_send_keeps_quota_unknown_and_requires_review(tmp_
     assert job['status'] == 'needs_review'
     assert '人工发送' in job['error_message']
     assert web['error_code'] == 'MANUAL_SEND_INTERRUPTED'
-    # 不知道操作者是否已经按过发送：保留额度占用，等关联下载/复查归档成功后再结算。
-    assert web['quota_state'] == 'unknown'
-    assert quota['reserved_seconds'] == 4
+    # 未成功下载不能扣费；中断转人工复查时释放预占。
+    assert web['quota_state'] == 'released'
+    assert quota['reserved_seconds'] == 0
+    assert quota['consumed_seconds'] == 0

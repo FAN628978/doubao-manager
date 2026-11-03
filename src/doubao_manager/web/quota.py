@@ -89,11 +89,10 @@ def quota_held_today(w) -> bool:
 
 def settle_quota(c: sqlite3.Connection, jobid: str, new_status: str,
                  prior_status: str = "", error_code: str = "") -> None:
-    """任务进入终态时结算额度：
-    - downloaded：把排队占用转成已消耗（确实出了片、确实花了额度）。
-    - needs_review：若任务可能已提交/确认，则转为 unknown 并继续占用额度；明确未提交才释放。
-    - failed：网页已明确失败，释放排队占用。
-    人工复查（reconcile / manual-result）会把 needs_review 重新推到 downloaded，此时再转为已消耗。
+    """结算任务额度：只有视频成功下载并写入 video_path 才转为已消费。
+
+    needs_review / failed 都只释放预占，不因网页可能已经提交而扣费；用户是否手动
+    归档不参与额度结算。人工复查下载成功后状态进入 downloaded，届时才扣费。
     """
     if new_status not in TERMINAL:
         return
@@ -101,7 +100,7 @@ def settle_quota(c: sqlite3.Connection, jobid: str, new_status: str,
     if not w:
         return
     dur = w["duration"] or 0
-    j = c.execute("SELECT account_id FROM jobs WHERE id=?", (jobid,)).fetchone()
+    j = c.execute("SELECT account_id, video_path FROM jobs WHERE id=?", (jobid,)).fetchone()
     account_id = j["account_id"] if j else None
     if not account_id or dur <= 0:
         return
@@ -110,6 +109,9 @@ def settle_quota(c: sqlite3.Connection, jobid: str, new_status: str,
               (account_id, day))
     state = w["quota_state"] or ""
     if new_status == "downloaded":
+        # 单纯把状态改为 downloaded 不能扣费，必须已有成功写入的本地视频路径。
+        if not (j["video_path"] or "").strip():
+            return
         if state != "consumed":
             if state == "released":
                 c.execute("UPDATE account_quota SET consumed_seconds = consumed_seconds + ? WHERE account_id=? AND day=?",
@@ -120,29 +122,7 @@ def settle_quota(c: sqlite3.Connection, jobid: str, new_status: str,
                                  consumed_seconds = consumed_seconds + ?
                              WHERE account_id=? AND day=?""", (dur, dur, account_id, day))
             c.execute("UPDATE video_web_jobs SET quota_state='consumed' WHERE job_id=?", (jobid,))
-    elif new_status == "needs_review":
-        definitely_unspent = error_code in {
-            "LOGIN_REQUIRED", "VERIFICATION_REQUIRED", "ACCOUNT_LIMIT", "SETTING_NOT_FOUND",
-            "SETTING_UNSUPPORTED", "SETTING_UNVERIFIED", "MODEL_NOT_FOUND", "MODEL_UNVERIFIED",
-            "UPLOAD_SLOT_NOT_FOUND", "UPLOAD_UNVERIFIED", "EDITOR_NOT_FOUND", "PROMPT_UNVERIFIED",
-            "SUBMIT_NOT_FOUND", "CONFIRM_NOT_SENT", "CONFIRM_REQUIRED",
-        }
-        # 人工发送阶段重启时无法知道操作者是否已经在网页点过发送，按“可能已消耗”保留占用，
-        # 等关联下载/人工归档成功后再转为已消耗。
-        known_maybe_spent = error_code == "MANUAL_SEND_INTERRUPTED"
-        uncertain = (not definitely_unspent and
-                     (prior_status in ("submitting", "confirming", "generating", "downloading", MANUAL_WAIT) or
-                      error_code in {"SUBMISSION_UNCONFIRMED", "WAIT_TIMEOUT",
-                                     "INTERRUPTED_REVIEW_REQUIRED", "WORKER_EXCEPTION",
-                                     "WEB_AUTOMATION_ERROR", "RESULT_URL_NOT_FOUND", "RESULT_NOT_READY"}) or
-                     known_maybe_spent)
-        if uncertain and state in ("", "reserved"):
-            c.execute("UPDATE video_web_jobs SET quota_state='unknown' WHERE job_id=?", (jobid,))
-        elif state in ("", "reserved", "unknown"):
-            c.execute("UPDATE account_quota SET reserved_seconds = MAX(0, reserved_seconds - ?) WHERE account_id=? AND day=?",
-                      (dur, account_id, day))
-            c.execute("UPDATE video_web_jobs SET quota_state='released' WHERE job_id=?", (jobid,))
-    elif new_status == "failed" and state in ("", "reserved", "unknown"):
+    elif new_status in ("needs_review", "failed") and state in ("", "reserved", "unknown"):
         c.execute("UPDATE account_quota SET reserved_seconds = MAX(0, reserved_seconds - ?) WHERE account_id=? AND day=?",
                   (dur, account_id, day))
         c.execute("UPDATE video_web_jobs SET quota_state='released' WHERE job_id=?", (jobid,))
@@ -163,7 +143,8 @@ def backfill_existing_quota(c: sqlite3.Connection) -> None:
     """一次性回填历史任务：downloaded 视为当天已消耗；旧 queued/进行中任务不回溯占用。幂等。"""
     rows = c.execute("""SELECT j.account_id, j.created_at, w.job_id, w.duration, w.quota_state
                         FROM jobs j JOIN video_web_jobs w ON j.id = w.job_id
-                        WHERE j.status = 'downloaded' AND w.quota_state = ''""").fetchall()
+                        WHERE j.status = 'downloaded' AND w.quota_state = ''
+                          AND j.video_path IS NOT NULL AND j.video_path != ''""").fetchall()
     for r in rows:
         if not r["account_id"] or (r["duration"] or 0) <= 0:
             continue
@@ -328,4 +309,21 @@ def recover_interrupted_jobs(db, base_dir=None):
                      "启动修复：网页任务曾被人工准备覆盖状态，已恢复为需人工复查", stamp),
             )
             settle_quota(c, row["id"], "needs_review", prior_status="ready")
+
+        # 兼容升级前遗留的 unknown/reserved：失败或待复查且没有成功下载的任务
+        # 在新规则下都不扣费，服务启动时幂等释放旧预占。
+        legacy_unfinished = c.execute(
+            "SELECT j.id,j.status,w.error_code FROM jobs j "
+            "JOIN video_web_jobs w ON w.job_id=j.id "
+            "WHERE j.status IN ('needs_review','failed') "
+            "AND COALESCE(w.quota_state,'') IN ('','reserved','unknown')"
+        ).fetchall()
+        for row in legacy_unfinished:
+            settle_quota(
+                c,
+                row["id"],
+                row["status"],
+                prior_status=row["status"],
+                error_code=row["error_code"] or "",
+            )
         backfill_existing_quota(c)

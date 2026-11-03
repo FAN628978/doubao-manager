@@ -60,7 +60,7 @@ def test_nuisance_dialogs_are_closed_but_business_dialogs_remain():
     asyncio.run(run())
 
 
-def test_uncertain_quota_remains_reserved_until_recalled(tmp_path, monkeypatch):
+def test_quota_is_consumed_only_after_successful_download(tmp_path, monkeypatch):
     monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'test.sqlite3')
     application.init_db()
     recover_interrupted_jobs(application.db)
@@ -77,9 +77,16 @@ def test_uncertain_quota_remains_reserved_until_recalled(tmp_path, monkeypatch):
                      VALUES(?,?,?,?)""", ('acc_unknown', '2026-10-28', 15, 0))
         settle_quota(c, 'job_unknown', 'needs_review', prior_status='generating', error_code='WAIT_TIMEOUT')
         summary = quota_summary(c, 'acc_unknown', '2026-10-28')
-        assert summary['reserved_seconds'] == 15
-        assert summary['unknown_seconds'] == 15
-        assert c.execute("SELECT quota_state FROM video_web_jobs WHERE job_id='job_unknown'").fetchone()['quota_state'] == 'unknown'
+        assert summary['reserved_seconds'] == 0
+        assert summary['consumed_seconds'] == 0
+        assert c.execute("SELECT quota_state FROM video_web_jobs WHERE job_id='job_unknown'").fetchone()['quota_state'] == 'released'
+
+        # 只有 downloaded 状态但还没有本地视频文件路径，仍然不能扣费。
+        settle_quota(c, 'job_unknown', 'downloaded')
+        summary = quota_summary(c, 'acc_unknown', '2026-10-28')
+        assert summary['consumed_seconds'] == 0
+
+        c.execute("UPDATE jobs SET video_path='data/videos/job_unknown.mp4' WHERE id='job_unknown'")
         settle_quota(c, 'job_unknown', 'downloaded')
         summary = quota_summary(c, 'acc_unknown', '2026-10-28')
         assert summary['reserved_seconds'] == 0

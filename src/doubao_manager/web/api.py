@@ -992,12 +992,11 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                         (duration, account_id, previous_day),
                     )
                 elif state == "unknown":
-                    # The previous attempt may already have spent quota. Keep the
-                    # conservative charge and reserve a separate current-day hold.
+                    # 未成功下载的旧尝试不扣费；跨天启动前只释放旧预占。
                     c.execute(
-                        "UPDATE account_quota SET reserved_seconds=MAX(0,reserved_seconds-?),"
-                        "consumed_seconds=consumed_seconds+? WHERE account_id=? AND day=?",
-                        (duration, duration, account_id, previous_day),
+                        "UPDATE account_quota SET reserved_seconds=MAX(0,reserved_seconds-?) "
+                        "WHERE account_id=? AND day=?",
+                        (duration, account_id, previous_day),
                     )
             reserve_quota(c, account_id, duration, day)
             c.execute(
@@ -2105,27 +2104,15 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 raise HTTPException(409,"任务额度已结算为已消耗，不能原任务重发")
             new_attempt = item["status"] != "queued"
             if new_attempt:
-                # A reset after an attempted send is a new generation intent. Settle
-                # the previous attempt before creating a separate current reservation;
-                # unknown means it may already have spent quota, so keep it charged.
-                if state == "unknown":
-                    settle_quota(c, jobid, "downloaded", prior_status=item["status"])
-                elif state in ("", "reserved"):
-                    terminal_status = "failed" if item["status"] == "failed" else "needs_review"
-                    settle_quota(
-                        c,
-                        jobid,
-                        terminal_status,
-                        prior_status=item["status"],
-                        error_code=item["web"].get("error_code") or "",
-                    )
-                    w = c.execute(
-                        "SELECT duration, quota_day, quota_state "
-                        "FROM video_web_jobs WHERE job_id=?",
-                        (jobid,),
-                    ).fetchone()
-                    if (w["quota_state"] or "") == "unknown":
-                        settle_quota(c, jobid, "downloaded", prior_status=item["status"])
+                # 旧尝试没有成功下载，不转为已消费；先释放旧预占，再为新尝试预占。
+                terminal_status = "failed" if item["status"] == "failed" else "needs_review"
+                settle_quota(
+                    c,
+                    jobid,
+                    terminal_status,
+                    prior_status=item["status"],
+                    error_code=item["web"].get("error_code") or "",
+                )
 
             w = c.execute(
                 "SELECT duration, quota_day, quota_state "
@@ -2963,25 +2950,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 day = local_day()
                 state = (w["quota_state"] or "") if w else ""
                 if needs_new_attempt:
-                    if state == "unknown":
-                        settle_quota(c, jobid, "downloaded", prior_status=item["status"])
-                    elif state in ("", "reserved"):
-                        settle_quota(
-                            c,
-                            jobid,
-                            "needs_review",
-                            prior_status=item["status"],
-                            error_code=item["web"].get("error_code") or "",
-                        )
-                        w = c.execute(
-                            "SELECT duration, quota_day, quota_state "
-                            "FROM video_web_jobs WHERE job_id=?",
-                            (jobid,),
-                        ).fetchone()
-                        if (w["quota_state"] or "") == "unknown":
-                            settle_quota(
-                                c, jobid, "downloaded", prior_status=item["status"]
-                            )
+                    # 补发确认语前，旧尝试未下载成功，只释放旧预占。
+                    settle_quota(
+                        c,
+                        jobid,
+                        "needs_review",
+                        prior_status=item["status"],
+                        error_code=item["web"].get("error_code") or "",
+                    )
                 w = c.execute(
                     "SELECT duration, quota_day, quota_state "
                     "FROM video_web_jobs WHERE job_id=?",

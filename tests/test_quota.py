@@ -56,6 +56,38 @@ def _wait_for(client, jobid, *, status=None, error_code=None):
     return state
 
 
+def test_startup_releases_legacy_unknown_without_download(tmp_path, monkeypatch):
+    _prepare_account(tmp_path, monkeypatch)
+    today = web_api.local_day()
+    with application.db() as conn:
+        conn.execute(
+            "INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,"
+            "status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                "legacy_unknown", "", "", "", "legacy", "account_1",
+                "needs_review", "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO video_web_jobs(job_id,ratio,duration,quota_day,quota_state,"
+            "error_code) VALUES(?,?,?,?,?,?)",
+            ("legacy_unknown", "16:9", 4, today, "unknown", "WAIT_TIMEOUT"),
+        )
+        web_api.reserve_quota(conn, "account_1", 4, today)
+
+    web_api.recover_interrupted_jobs(application.db)
+
+    with application.db() as conn:
+        quota = web_api.quota_summary(conn, "account_1", today)
+        state = conn.execute(
+            "SELECT quota_state FROM video_web_jobs WHERE job_id='legacy_unknown'"
+        ).fetchone()["quota_state"]
+    assert state == "released"
+    assert quota["reserved_seconds"] == 0
+    assert quota["consumed_seconds"] == 0
+
+
 def test_cross_day_start_moves_stale_reservation_to_today(tmp_path, monkeypatch):
     _prepare_account(tmp_path, monkeypatch)
 
@@ -125,7 +157,7 @@ def test_cross_day_start_moves_stale_reservation_to_today(tmp_path, monkeypatch)
     assert today_row["consumed_seconds"] == 4
 
 
-def test_resend_after_unknown_submission_charges_both_attempts(
+def test_resend_after_unknown_submission_does_not_charge_failed_attempts(
     tmp_path, monkeypatch
 ):
     _prepare_account(tmp_path, monkeypatch)
@@ -181,11 +213,11 @@ def test_resend_after_unknown_submission_charges_both_attempts(
 
     with application.db() as conn:
         quota = web_api.quota_summary(conn, "account_1", today)
-    assert quota["consumed_seconds"] == 4
+    assert quota["consumed_seconds"] == 0
     assert quota["reserved_seconds"] == 0
 
 
-def test_confirmation_after_unknown_submission_counts_new_attempt(
+def test_confirmation_after_unknown_submission_only_reserves_new_attempt(
     tmp_path, monkeypatch
 ):
     _prepare_account(tmp_path, monkeypatch)
@@ -285,6 +317,6 @@ def test_confirmation_after_unknown_submission_counts_new_attempt(
         state = conn.execute(
             "SELECT quota_state FROM video_web_jobs WHERE job_id=?", (jobid,)
         ).fetchone()
-    assert quota["consumed_seconds"] == 4
+    assert quota["consumed_seconds"] == 0
     assert quota["reserved_seconds"] == 4
     assert state["quota_state"] == "reserved"
