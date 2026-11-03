@@ -1946,7 +1946,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         elif item["status"] in (*ACTIVE, MANUAL_WAIT, "needs_review"):
             manual_controls.append({
                 "key": "takeover",
-                "label": "人工接管当前任务",
+                "label": "人工接管",
                 "enabled": True,
                 "reason": "",
                 "confirm": "确认暂停当前任务的自动网页操作并由人工接管？同账号其他任务不受影响。",
@@ -2162,7 +2162,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if account_is_busy(account_id, ignore_jobid=jobid):
             raise HTTPException(
                 409,
-                "原账号窗口正被其他任务使用，暂不能关闭并重新自动执行",
+                "原账号窗口正被其他任务使用，暂不能关闭并换号自动执行",
             )
         idle_close = idle_close_tasks.pop(account_id, None)
         if idle_close is not None and not idle_close.done():
@@ -3860,7 +3860,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             return {
                 "success": False,
                 "verified": False,
-                "detail": "任务仍在执行，暂不能重新自动执行",
+                "detail": "任务仍在执行，暂不能换号自动执行",
                 "status": before.get("status") or "",
             }
         previous_account_id = before.get("account_id") or ""
@@ -3879,9 +3879,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "accepted": current.get("status") in ACTIVE,
             "status": current.get("status") or "",
             "detail": (
-                "已重新自动执行并进入处理，未产生新任务 ID"
+                "已换号自动执行并进入处理，未产生新任务 ID"
                 if success
-                else "已请求重新自动执行，但状态未推进，仍需人工核对"
+                else "已请求换号自动执行，但状态未推进，仍需人工核对"
             ),
         }
 
