@@ -53,6 +53,7 @@ from .models import (
     QueueAccountRequest,
     ReviewNeeded,
     SubmitModeSetting,
+    TaskAcceptanceSetting,
     VideoModelSetting,
     VideoRequest,
 )
@@ -516,6 +517,19 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             return local_submit_mode() == "auto"
         return str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
 
+    def local_accepting_tasks() -> bool:
+        with db() as c:
+            row = c.execute(
+                "SELECT value FROM local_settings WHERE key='accepting_tasks'"
+            ).fetchone()
+        if row is None:
+            return True
+        return str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
+
+    def ensure_accepting_tasks() -> None:
+        if not local_accepting_tasks():
+            raise HTTPException(503, "本机当前已停止接受新任务")
+
     def has_auto_dispatch_setting() -> bool:
         with db() as c:
             return c.execute(
@@ -589,6 +603,22 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 ("1" if payload.auto_dispatch_enabled else "0",),
             )
         return {"auto_dispatch_enabled": payload.auto_dispatch_enabled}
+
+    @app.get("/api/settings/task-acceptance", tags=["Local Settings"])
+    async def get_task_acceptance_setting():
+        ensure_schema()
+        return {"accepting_tasks": local_accepting_tasks()}
+
+    @app.put("/api/settings/task-acceptance", tags=["Local Settings"])
+    async def update_task_acceptance_setting(payload: TaskAcceptanceSetting):
+        ensure_schema()
+        with db() as c:
+            c.execute(
+                "INSERT INTO local_settings(key,value) VALUES('accepting_tasks',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("1" if payload.accepting_tasks else "0",),
+            )
+        return {"accepting_tasks": payload.accepting_tasks}
 
     @app.get("/api/settings/video-models", tags=["Local Settings"])
     async def get_video_model_settings():
@@ -1747,7 +1777,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     @app.post("/api/v1/videos/generations", status_code=202, tags=["Doubao Web Video"])
     async def create(req: VideoRequest, x_api_key: Optional[str] = Header(None)):
-        auth(x_api_key); ensure_schema()
+        auth(x_api_key); ensure_schema(); ensure_accepting_tasks()
         return create_generation(req)
 
     def start_worker(jobid, req, avoid_account_id: str = ""):
@@ -4305,7 +4335,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         x_api_key: Optional[str] = Header(default=None),
     ):
         """单入口提交：图片作为文件字段直接上传，无需先调用 /assets。"""
-        auth(x_api_key); ensure_schema()
+        auth(x_api_key); ensure_schema(); ensure_accepting_tasks()
         if mode not in MODES:
             raise HTTPException(422, f"mode 必须是 {list(MODES)} 之一")
         if submit_mode is not None and submit_mode not in ("auto", "manual"):

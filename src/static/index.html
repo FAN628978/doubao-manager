@@ -109,11 +109,12 @@
 <div class="modal-backdrop" id="submitModeModal"><div class="modal task-settings-modal">
   <div class="modal-head"><div><h2>任务设置</h2><p>配置新任务的调度、执行和异常处理方式</p></div><button class="close-x" onclick="closeModal('submitModeModal')">×</button></div>
   <form id="submitModeForm"><div class="modal-body task-settings-body">
-    <div class="settings-flow" aria-label="当前任务流程"><span class="flow-start">新任务</span><i>→</i><span id="dispatchFlowState">等待手动放行</span><i>→</i><span id="executionFlowState">准备后人工发送</span></div>
+    <div class="settings-flow" aria-label="当前任务流程"><span id="acceptanceFlowState" class="flow-start">接受新任务</span><i>→</i><span id="dispatchFlowState">等待手动放行</span><i>→</i><span id="executionFlowState">准备后人工发送</span></div>
 
     <section class="settings-section">
-      <div class="settings-section-head"><div><span class="settings-index">01</span><strong>任务流程</strong></div><p>两个开关相互独立，只影响后续新建任务</p></div>
+      <div class="settings-section-head"><div><span class="settings-index">01</span><strong>任务流程</strong></div><p>停止接收不会中断已有任务</p></div>
       <div class="task-setting-grid">
+        <div class="setting-card setting-card-full"><div class="setting-card-title"><label for="taskAcceptanceSettingToggle">接受任务</label><label class="switch-control" for="taskAcceptanceSettingToggle"><input type="checkbox" id="taskAcceptanceSettingToggle" onchange="setTaskAcceptanceSetting(this.checked)" aria-describedby="taskAcceptanceSettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>允许接收新的视频任务</strong><span id="taskAcceptanceSettingState">接受中 · 新任务可以正常提交</span></div><small id="taskAcceptanceSettingHint">关闭后新任务请求返回“已停止接受”，已有任务继续处理。</small></div>
         <div class="setting-card"><div class="setting-card-title"><label for="autoDispatchSettingToggle">自动调度</label><label class="switch-control" for="autoDispatchSettingToggle"><input type="checkbox" id="autoDispatchSettingToggle" onchange="setAutoDispatchSetting(this.checked)" aria-describedby="autoDispatchSettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>新任务自动进入调度</strong><span id="autoDispatchSettingState">已关闭 · 新任务先进入待处理</span></div><small id="autoDispatchSettingHint">关闭时任务停在“待处理”，需要手动点击“进入调度”。</small></div>
         <div class="setting-card"><div class="setting-card-title"><label for="autoExecutionSettingToggle">自动执行</label><label class="switch-control" for="autoExecutionSettingToggle"><input type="checkbox" id="autoExecutionSettingToggle" onchange="setAutoExecutionSetting(this.checked)" aria-describedby="autoExecutionSettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>脚本自动完成网页流程</strong><span id="autoExecutionSettingState">已关闭 · 准备页面后等待人工发送</span></div><small id="autoExecutionSettingHint">开启后自动配置、发送、确认、下载并回推；关闭后等待人工发送。</small></div>
       </div>
@@ -140,7 +141,7 @@
       <div class="setting-card setting-card-wide"><div class="setting-card-title"><label for="claudeRecoverySettingToggle">Claude 自动恢复</label><label class="switch-control" for="claudeRecoverySettingToggle"><input type="checkbox" id="claudeRecoverySettingToggle" onchange="setClaudeRecoverySetting(this.checked)" aria-describedby="claudeRecoverySettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>异常任务交给 Claude 检查和恢复</strong><span id="claudeRecoverySettingState">已关闭 · 异常任务转人工处理</span></div><small id="claudeRecoverySettingHint">关闭后不再启动新的自动恢复，正在运行的恢复也会停止。</small></div>
     </section>
 
-    <div class="settings-save-note"><span>i</span><p><strong>保存后立即生效</strong>自动调度和自动执行只影响后续新任务，不会中断正在处理的任务。</p></div>
+    <div class="settings-save-note"><span>i</span><p><strong>保存后立即生效</strong>停止接受任务、自动调度和自动执行都不会中断正在处理的任务。</p></div>
   </div><div class="modal-foot"><button type="button" class="btn" onclick="closeModal('submitModeModal')">取消</button><button type="submit" class="btn primary">保存设置</button></div></form>
 </div>
 

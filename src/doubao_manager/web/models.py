@@ -65,6 +65,10 @@ class AutoDispatchSetting(BaseModel):
     auto_dispatch_enabled: bool
 
 
+class TaskAcceptanceSetting(BaseModel):
+    accepting_tasks: bool
+
+
 class VideoModelSetting(BaseModel):
     member_model: Literal["Seedance 2.5", "Seedance 2.0", "Seedance 2.0 Fast", "Seedance 2.0 Mini"]
     non_member_model: Literal["Seedance 2.5", "Seedance 2.0", "Seedance 2.0 Fast", "Seedance 2.0 Mini"]

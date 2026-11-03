@@ -86,6 +86,8 @@ class Server:
         self.feedback_requests = 0
         self.auto_dispatch_enabled = True
         self.auto_dispatch_updates = []
+        self.accepting_tasks = True
+        self.task_acceptance_updates = []
         self.submit_mode = "auto"
         self.submit_mode_updates = []
         self.member_video_model = "Seedance 2.0"
@@ -168,6 +170,16 @@ class Server:
                 body=_json({
                     "auto_dispatch_enabled": self.auto_dispatch_enabled,
                 }),
+            )
+        elif url.endswith("/api/settings/task-acceptance"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.accepting_tasks = bool(body.get("accepting_tasks"))
+                self.task_acceptance_updates.append(self.accepting_tasks)
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json({"accepting_tasks": self.accepting_tasks}),
             )
         elif url.endswith("/api/settings/video-models"):
             if route.request.method == "PUT":
@@ -988,6 +1000,7 @@ def test_automation_switches_are_saved_independently():
             try:
                 page = await _open_page(browser, server)
                 await page.evaluate("() => openSubmitModeSettings()")
+                assert await page.is_checked("#taskAcceptanceSettingToggle")
                 assert await page.is_checked("#autoDispatchSettingToggle")
                 assert await page.is_checked("#autoExecutionSettingToggle")
                 assert await page.inner_text("#dispatchFlowState") == "自动进入调度"
@@ -1015,6 +1028,36 @@ def test_automation_switches_are_saved_independently():
                     "() => state.autoDispatchEnabled"
                 ) is False
                 assert await page.evaluate("() => state.submitMode") == "auto"
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_task_acceptance_switch_is_saved_from_task_settings():
+    async def run():
+        server = Server()
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => openSubmitModeSettings()")
+                assert await page.is_checked("#taskAcceptanceSettingToggle")
+                assert await page.inner_text("#acceptanceFlowState") == "接受新任务"
+
+                await page.click("#taskAcceptanceSettingToggle")
+                assert not await page.is_checked("#taskAcceptanceSettingToggle")
+                assert await page.inner_text("#acceptanceFlowState") == "停止接收任务"
+                assert "已停止" in await page.inner_text(
+                    "#taskAcceptanceSettingState"
+                )
+                await page.evaluate("() => $('submitModeForm').requestSubmit()")
+                await page.wait_for_function(
+                    "() => !document.getElementById('submitModeModal').classList.contains('show')"
+                )
+
+                assert server.task_acceptance_updates == [False]
+                assert await page.evaluate("() => state.acceptingTasks") is False
             finally:
                 await browser.close()
 

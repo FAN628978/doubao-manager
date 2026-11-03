@@ -206,6 +206,39 @@ def test_setting_default_is_manual_and_persists(bridge):
     assert client.get("/api/settings/auto-dispatch").json()["auto_dispatch_enabled"] is True
 
 
+def test_task_acceptance_switch_rejects_only_new_tasks(bridge):
+    client = bridge["client"]
+    assert client.get("/api/settings/task-acceptance").json() == {
+        "accepting_tasks": True,
+    }
+
+    stopped = client.put(
+        "/api/settings/task-acceptance",
+        json={"accepting_tasks": False},
+    )
+    assert stopped.status_code == 200
+    rejected = client.post("/api/v1/videos/generations", json={
+        "prompt": "不应接收的新任务", "duration": 4,
+    })
+    assert rejected.status_code == 503
+    assert rejected.json()["detail"] == "本机当前已停止接受新任务"
+    multipart_rejected = client.post(
+        "/api/v1/videos",
+        data={"prompt": "multipart 新任务"},
+    )
+    assert multipart_rejected.status_code == 503
+
+    resumed = client.put(
+        "/api/settings/task-acceptance",
+        json={"accepting_tasks": True},
+    )
+    assert resumed.json() == {"accepting_tasks": True}
+    accepted = client.post("/api/v1/videos/generations", json={
+        "prompt": "恢复后接收的任务", "duration": 4, "auto_start": False,
+    })
+    assert accepted.status_code == 202
+
+
 def test_auto_dispatch_can_prepare_manual_execution(bridge):
     client = bridge["client"]
     _set_mode(client, "manual")
