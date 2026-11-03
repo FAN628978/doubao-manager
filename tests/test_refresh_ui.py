@@ -97,6 +97,8 @@ class Server:
         self.ignore_quota_updates = []
         self.claude_recovery_enabled = False
         self.claude_recovery_updates = []
+        self.auto_switch_on_exception = False
+        self.auto_switch_on_exception_updates = []
         self.job_account_updates = []
         self.accounts = [{
             "id": "account_1", "name": "账号一", "note": "",
@@ -231,6 +233,22 @@ class Server:
                     "claude_recovery_enabled": self.claude_recovery_enabled,
                     "environment_enabled": True,
                     "active_recoveries": 0,
+                }),
+            )
+        elif url.endswith("/api/settings/auto-switch-on-exception"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.auto_switch_on_exception = bool(
+                    body.get("auto_switch_on_exception")
+                )
+                self.auto_switch_on_exception_updates.append(
+                    self.auto_switch_on_exception
+                )
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json({
+                    "auto_switch_on_exception": self.auto_switch_on_exception,
                 }),
             )
         elif "/api/jobs/" in url and url.endswith("/account"):
@@ -1120,6 +1138,37 @@ def test_task_acceptance_switch_is_saved_from_task_settings():
 
                 assert server.task_acceptance_updates == [False]
                 assert await page.evaluate("() => state.acceptingTasks") is False
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
+def test_auto_switch_on_exception_is_saved_from_task_settings():
+    async def run():
+        server = Server()
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => openSubmitModeSettings()")
+                assert not await page.is_checked(
+                    "#autoSwitchOnExceptionSettingToggle"
+                )
+
+                await page.click("#autoSwitchOnExceptionSettingToggle")
+                assert "已开启" in await page.inner_text(
+                    "#autoSwitchOnExceptionSettingState"
+                )
+                await page.evaluate("() => $('submitModeForm').requestSubmit()")
+                await page.wait_for_function(
+                    "() => !document.getElementById('submitModeModal').classList.contains('show')"
+                )
+
+                assert server.auto_switch_on_exception_updates == [True]
+                assert await page.evaluate(
+                    "() => state.autoSwitchOnException"
+                ) is True
             finally:
                 await browser.close()
 

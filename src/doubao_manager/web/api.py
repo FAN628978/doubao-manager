@@ -45,6 +45,7 @@ from .config import (
 )
 from .models import (
     AutoDispatchSetting,
+    AutoSwitchOnExceptionSetting,
     ClaudeRecoverySetting,
     ConfirmationPresetInput,
     ConfirmationSendRequest,
@@ -572,6 +573,15 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             return True
         return str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
 
+    def local_auto_switch_on_exception() -> bool:
+        with db() as c:
+            row = c.execute(
+                "SELECT value FROM local_settings WHERE key='auto_switch_on_exception'"
+            ).fetchone()
+        return bool(row) and str(row["value"]).strip().lower() in (
+            "1", "true", "yes", "on"
+        )
+
     @app.get("/api/settings/video-submit-mode", tags=["Local Settings"])
     async def get_video_submit_mode():
         ensure_schema()
@@ -718,6 +728,25 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "environment_enabled": environment_enabled,
             "active_recoveries": int(getattr(recovery_service, "pending_count", 0) or 0),
         }
+
+    @app.get("/api/settings/auto-switch-on-exception", tags=["Local Settings"])
+    async def get_auto_switch_on_exception_setting():
+        ensure_schema()
+        return {"auto_switch_on_exception": local_auto_switch_on_exception()}
+
+    @app.put("/api/settings/auto-switch-on-exception", tags=["Local Settings"])
+    async def update_auto_switch_on_exception_setting(
+        payload: AutoSwitchOnExceptionSetting,
+    ):
+        ensure_schema()
+        with db() as c:
+            c.execute(
+                "INSERT INTO local_settings(key,value) "
+                "VALUES('auto_switch_on_exception',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("1" if payload.auto_switch_on_exception else "0",),
+            )
+        return {"auto_switch_on_exception": payload.auto_switch_on_exception}
 
     def fingerprint(req):
         # Display naming is metadata, not generation input; changing it must not break
@@ -1157,7 +1186,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 )
         return next_at
 
-    async def worker(jobid, req, avoid_account_id: str = ""):
+    async def worker(
+        jobid, req, avoid_account_id: str = "", auto_switch_allowed: bool = True
+    ):
         heartbeat_stop = asyncio.Event()
         heartbeat_task = None
         account_claimed = False
@@ -1322,7 +1353,18 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     prepared_pages.pop(jobid, None)
             if account_claimed:
                 await release_account_slot_if_finished(jobid, req.account_id)
-            if recovery_error is not None:
+            auto_switched = False
+            if (
+                recovery_error is not None
+                and auto_switch_allowed
+                and local_auto_switch_on_exception()
+            ):
+                auto_switched = await auto_switch_after_exception(
+                    jobid,
+                    req.account_id or "",
+                    recovery_error["error_code"],
+                )
+            if recovery_error is not None and not auto_switched:
                 agent_page = prepared_pages.get(jobid)
                 if agent_page is None and ctx is not None:
                     pages = list(getattr(ctx, "pages", []) or [])
@@ -1338,7 +1380,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 )
             if download_succeeded:
                 await cleanup_downloaded_browser(jobid, req.account_id)
-            else:
+            elif not auto_switched:
                 schedule_idle_close(req.account_id, jobid)
 
     def store_image_asset(blob: bytes, filename: str) -> str:
@@ -1779,7 +1821,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         auth(x_api_key); ensure_schema(); ensure_accepting_tasks()
         return create_generation(req)
 
-    def start_worker(jobid, req, avoid_account_id: str = ""):
+    def start_worker(
+        jobid, req, avoid_account_id: str = "", auto_switch_allowed: bool = True
+    ):
         """Admit a queued job to the processing queue.
 
         账号不在这里分配：任务先排队等处理名额，真正拿到名额、进入处理前那一刻
@@ -1825,7 +1869,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             ensure_start_quota(jobid, req.account_id)
         with db() as c:
             c.execute("UPDATE video_web_jobs SET dispatched_at=? WHERE job_id=?", (ts(), jobid))
-        pending[jobid] = asyncio.create_task(worker(jobid, req, avoid_account_id))
+        pending[jobid] = asyncio.create_task(
+            worker(jobid, req, avoid_account_id, auto_switch_allowed)
+        )
 
     @app.get("/api/v1/videos/generations/{jobid}",tags=["Doubao Web Video"])
     async def query(jobid:str,x_api_key:Optional[str]=Header(None)):
@@ -2192,6 +2238,55 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 f"关闭原账号浏览器窗口失败，任务尚未重新启动：{str(exc)[:160]}",
             ) from exc
         prepared_pages.pop(jobid, None)
+
+    async def auto_switch_after_exception(
+        jobid: str, previous_account_id: str, error_code: str
+    ) -> bool:
+        """Best-effort one-shot account rotation for an automatic worker failure."""
+        try:
+            await close_previous_browser_before_restart(jobid, previous_account_id)
+            req = await reset_generation(jobid, rematch_account=True)
+            req.submit_mode = "auto"
+            with db() as c:
+                c.execute(
+                    "UPDATE video_web_jobs SET submit_mode='auto' WHERE job_id=?",
+                    (jobid,),
+                )
+                c.execute(
+                    "INSERT INTO video_web_events(job_id,status,message,timestamp) "
+                    "VALUES(?,?,?,?)",
+                    (
+                        jobid,
+                        "queued",
+                        f"遇到异常 {error_code}，已自动换号并重新执行（本轮最多一次）",
+                        ts(),
+                    ),
+                )
+            start_worker(
+                jobid,
+                req,
+                previous_account_id or avoid_account_for(jobid),
+                auto_switch_allowed=False,
+            )
+            return True
+        except Exception as exc:
+            logger.exception("Automatic account switch failed for job %s", jobid)
+            with db() as c:
+                current = c.execute(
+                    "SELECT status FROM jobs WHERE id=?", (jobid,)
+                ).fetchone()
+                if current is not None:
+                    c.execute(
+                        "INSERT INTO video_web_events(job_id,status,message,timestamp) "
+                        "VALUES(?,?,?,?)",
+                        (
+                            jobid,
+                            current["status"],
+                            "异常后自动换号失败：" + str(exc)[:240],
+                            ts(),
+                        ),
+                    )
+            return False
 
     @app.post("/api/v1/videos/generations/{jobid}/prepare-manual", tags=["Doubao Web Video"])
     async def prepare_manual(jobid: str, x_api_key: Optional[str] = Header(None)):
@@ -4262,7 +4357,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         return {"provider":"doubao_web","modes":list(MODES),
                 "ratios":"doubao_ui_defined","durations":"doubao_ui_defined",
                 "state":"implemented_live_verified","precise_ui_controls_required":True,
-                "assets":"local_upload_with_explicit_slots","automatic_account_rotation":False,
+                "assets":"local_upload_with_explicit_slots","automatic_account_rotation":True,
                 "submit_modes":["auto","manual"],
                 "manual_flow":"manual 任务创建后先排队；在本机点击开始后只填提示词和素材，不点发送；"
                               "操作者在豆包网页发送，出片后点关联下载（recall）归档；"

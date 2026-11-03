@@ -158,6 +158,7 @@ H3/外部系统 POST 建单（模式由本地设置）        → status=queued�
 要点：
 
 - 本地“自动调度”和“自动执行”是独立设置：前者决定是否立即放行，后者决定放行后自动发送还是等待人工发送。显式调用 `/dispatch`（“进入调度”）只放行，不会把 `manual` 任务改成 `auto`。为兼容旧 API 调用，调用方显式传 `submit_mode=manual` 时即使同时传 `auto_start=true` 仍先进入 `queued`；本地设置则支持“自动调度 + 人工发送”组合。
+- 本地“异常自动换号”通过 `GET/PUT /api/settings/auto-switch-on-exception` 配置。开启后，执行任务首次遇到异常会关闭原账号窗口、解除原账号并按原参数换号自动执行；同一轮最多自动换号一次，再次异常进入 Claude 恢复或人工处理，避免无限重试。
 - **重新发送沿用原任务 ID**：`/resend` 不会新建 job，旧的 `web_page_url`、`result_card_index` 和结果绑定会被清空，重新准备页面。之后 `/recall` 只认这次新页面，因此“关联下载以重新发送的网页为准”。同一天内重发复用已有额度占用，不重复占用。
 - **人工判定失败是最终裁决**：`/mark-failed` 把任务置为 `failed`、错误码 `MANUAL_CONFIRMED_FAILED`，并释放额度占用；H3 收到该错误码后显示失败、停止等待。判定后仍可 `/resend`，但 H3 需要手动召回才会恢复轮询。
 - `manual` 任务的 `needs_review` / 普通 `failed` 在 H3 侧映射为 `processing`（最长 7 天），等待本机操作者重新发送或关联下载；只有 `MANUAL_CONFIRMED_FAILED` 才按失败处理。自动任务仍按失败处理。H3 始终轮询原 `job_id`，最终从同一个任务取回视频。

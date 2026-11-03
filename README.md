@@ -198,6 +198,7 @@ curl -o out.mp4 http://127.0.0.1:8765/api/v1/videos/job_xxx/video
 | **接受任务** | 接受 JSON 与 multipart 接口提交的新视频任务（默认） | 新任务返回 `503`，已有任务继续处理 |
 | **自动调度** | 建单后立即进入调度 | 先进入“待处理”，手动点击“进入调度”后放行 |
 | **自动执行** | 进入调度后由脚本自动发送、确认、下载并回推 | 进入调度后只准备页面与素材，等待人工发送 |
+| **异常自动换号** | 首次执行异常时关闭原账号窗口、换号并自动重跑一次 | 进入现有 Claude 恢复或人工处理流程（默认） |
 
 因此可以组合成全自动、延迟全自动、自动准备后人工发送、完全手动放行四种工作方式。“进入调度”（`/dispatch`）只负责放行，不会改变任务建单时保存的自动执行方式。
 
@@ -270,6 +271,7 @@ Host lzg
 | GET/PUT | `/api/settings/auto-dispatch` | 查询或设置新任务是否自动进入调度 |
 | GET/PUT | `/api/settings/video-submit-mode` | 查询或设置进入调度后是否自动执行（`auto` / `manual`） |
 | GET/PUT | `/api/settings/video-models` | 查询或设置会员账号与非会员账号使用的视频模型 |
+| GET/PUT | `/api/settings/auto-switch-on-exception` | 查询或设置执行异常后是否自动换号重跑；同一轮最多自动换号一次 |
 | GET/POST/PUT/DELETE | `/api/v1/videos/confirmation-presets` | 查询、新增、编辑或删除确认语预设；默认预设可编辑但不可删除，自动执行遇到确认步骤时实时使用该默认预设 |
 | POST | `/api/v1/videos/generations/{id}/send-confirmation?confirm_send=true` | 从请求体选择 `preset_id`，随时向任务已记录的豆包会话页发送该确认语；重复发送可能再次触发生成或消耗额度 |
 | POST | `/api/v1/videos/generations/{id}/download-result?confirm_review=true` | 兼容旧调用；内部使用统一召回流程 |

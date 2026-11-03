@@ -86,6 +86,10 @@ class ClaudeRecoverySetting(BaseModel):
     claude_recovery_enabled: bool
 
 
+class AutoSwitchOnExceptionSetting(BaseModel):
+    auto_switch_on_exception: bool
+
+
 class ConfirmationSendRequest(BaseModel):
     preset_id: str = Field(min_length=1, max_length=80)
 

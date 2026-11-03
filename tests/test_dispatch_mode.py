@@ -40,11 +40,17 @@ def bridge(tmp_path, monkeypatch):
     _seed(tmp_path)
 
     started = []
+    execution_accounts = []
+    failures = {"remaining": 0}
 
     async def fake_perform(ctx, req, assets, target, status, page_url, binding,
                            on_manual_ready=None, confirmation_text="",
                            close_on_success=False, on_review_page=None):
         started.append(req.submit_mode)
+        execution_accounts.append(req.account_id)
+        if failures["remaining"]:
+            failures["remaining"] -= 1
+            raise web_api.ReviewNeeded("WORKER_EXCEPTION", "模拟执行异常")
         # 每个 TestClient 使用自己的事件循环，阻塞事件必须在当前循环里创建。
         await asyncio.Event().wait()
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -75,7 +81,13 @@ def bridge(tmp_path, monkeypatch):
         )
         return TestClient(app_)
 
-    return {"client": session(), "session": session, "started": started}
+    return {
+        "client": session(),
+        "session": session,
+        "started": started,
+        "execution_accounts": execution_accounts,
+        "failures": failures,
+    }
 
 
 def _resume_in_loop(client):
@@ -204,6 +216,68 @@ def test_setting_default_is_manual_and_persists(bridge):
     _set_auto_dispatch(client, True)
     assert client.get("/api/settings/video-submit-mode").json()["submit_mode"] == "auto"
     assert client.get("/api/settings/auto-dispatch").json()["auto_dispatch_enabled"] is True
+
+
+def test_auto_switch_on_exception_setting_defaults_off_and_persists(bridge):
+    client = bridge["client"]
+    assert client.get("/api/settings/auto-switch-on-exception").json() == {
+        "auto_switch_on_exception": False,
+    }
+    updated = client.put(
+        "/api/settings/auto-switch-on-exception",
+        json={"auto_switch_on_exception": True},
+    )
+    assert updated.status_code == 200
+    assert updated.json() == {"auto_switch_on_exception": True}
+    assert client.get("/api/settings/auto-switch-on-exception").json() == {
+        "auto_switch_on_exception": True,
+    }
+
+
+def test_worker_exception_switches_account_and_restarts_once(bridge, tmp_path):
+    with application.db() as conn:
+        conn.execute(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            (
+                "account_2",
+                "账号二",
+                "",
+                str(tmp_path / "p2"),
+                "2026-01-02T00:00:00+00:00",
+            ),
+        )
+
+    bridge["failures"]["remaining"] = 1
+    with bridge["session"]() as client:
+        _set_mode(client, "auto")
+        _set_auto_dispatch(client, True)
+        client.put(
+            "/api/settings/auto-switch-on-exception",
+            json={"auto_switch_on_exception": True},
+        )
+        created = client.post(
+            "/api/v1/videos/generations",
+            json={"prompt": "异常后换号", "duration": 4},
+        )
+        assert created.status_code == 202, created.text
+
+        state = _wait_status(
+            client,
+            created.json()["id"],
+            set(web_api.ACTIVE),
+        )
+        deadline = time.time() + 10
+        while len(bridge["execution_accounts"]) < 2 and time.time() < deadline:
+            time.sleep(0.01)
+        state = client.get(
+            f"/api/v1/videos/generations/{created.json()['id']}"
+        ).json()
+
+        assert bridge["execution_accounts"][:2] == ["account_1", "account_2"]
+        assert bridge["started"][:2] == ["auto", "auto"]
+        assert state["account_id"] == "account_2"
+        assert state["status"] in web_api.ACTIVE
+        assert state["web"]["submit_mode"] == "auto"
 
 
 def test_task_acceptance_switch_rejects_only_new_tasks(bridge):

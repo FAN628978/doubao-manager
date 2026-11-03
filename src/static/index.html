@@ -138,7 +138,10 @@
 
     <section class="settings-section">
       <div class="settings-section-head"><div><span class="settings-index">04</span><strong>异常处理</strong></div><p>设置自动化异常发生后的恢复策略</p></div>
-      <div class="setting-card setting-card-wide"><div class="setting-card-title"><label for="claudeRecoverySettingToggle">Claude 自动恢复</label><label class="switch-control" for="claudeRecoverySettingToggle"><input type="checkbox" id="claudeRecoverySettingToggle" onchange="setClaudeRecoverySetting(this.checked)" aria-describedby="claudeRecoverySettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>异常任务交给 Claude 检查和恢复</strong><span id="claudeRecoverySettingState">已关闭 · 异常任务转人工处理</span></div><small id="claudeRecoverySettingHint">关闭后不再启动新的自动恢复，正在运行的恢复也会停止。</small></div>
+      <div class="task-setting-grid">
+        <div class="setting-card"><div class="setting-card-title"><label for="autoSwitchOnExceptionSettingToggle">异常自动换号</label><label class="switch-control" for="autoSwitchOnExceptionSettingToggle"><input type="checkbox" id="autoSwitchOnExceptionSettingToggle" onchange="setAutoSwitchOnExceptionSetting(this.checked)" aria-describedby="autoSwitchOnExceptionSettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>遇到异常后换号自动执行</strong><span id="autoSwitchOnExceptionSettingState">已关闭 · 异常任务不自动换号</span></div><small id="autoSwitchOnExceptionSettingHint">开启后关闭原账号窗口并按原任务参数换号执行；同一轮最多自动换号一次。</small></div>
+        <div class="setting-card"><div class="setting-card-title"><label for="claudeRecoverySettingToggle">Claude 自动恢复</label><label class="switch-control" for="claudeRecoverySettingToggle"><input type="checkbox" id="claudeRecoverySettingToggle" onchange="setClaudeRecoverySetting(this.checked)" aria-describedby="claudeRecoverySettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>异常任务交给 Claude 检查和恢复</strong><span id="claudeRecoverySettingState">已关闭 · 异常任务转人工处理</span></div><small id="claudeRecoverySettingHint">自动换号未开启、未成功或再次异常时，由此策略继续处理。</small></div>
+      </div>
     </section>
 
     <div class="settings-save-note"><span>i</span><p><strong>保存后立即生效</strong>停止接受任务、自动调度和自动执行都不会中断正在处理的任务。</p></div>
