@@ -123,6 +123,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     processing_condition = asyncio.Condition()
     active_processing = 0
     processing_job_ids: set[str] = set()
+    processing_waiters: dict[str, tuple[str, str]] = {}
     # Only machine-owned phases occupy a processing slot. Waiting for a human
     # (manual send / review) is already a terminal hand-off: keeping the slot
     # there would let three abnormal jobs block every new task indefinitely.
@@ -376,18 +377,43 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             active_processing = len(processing_job_ids)
             processing_condition.notify_all()
 
+    def processing_waiter_order(jobid: str) -> tuple[str, str]:
+        with db() as c:
+            row = c.execute(
+                "SELECT created_at,id FROM jobs WHERE id=?", (jobid,)
+            ).fetchone()
+        if row is None:
+            return ("9999-12-31T23:59:59+00:00", jobid)
+        return (str(row["created_at"] or ""), str(row["id"] or jobid))
+
+    def processing_slot_available() -> bool:
+        limit = local_processing_limit()
+        return limit == 0 or len(processing_job_ids) < limit
+
+    def is_oldest_processing_waiter(jobid: str) -> bool:
+        return bool(processing_waiters) and jobid == min(
+            processing_waiters,
+            key=lambda waiting_id: processing_waiters[waiting_id],
+        )
+
     async def acquire_processing_job(jobid: str) -> None:
-        """Wait until this job owns one global machine-processing slot."""
+        """Give the next global processing slot to the oldest waiting job."""
         nonlocal active_processing
         async with processing_condition:
             sync_processing_job_ids()
             processing_job_ids.update(persisted_processing_job_ids())
             if jobid not in processing_job_ids:
-                await processing_condition.wait_for(
-                    lambda: local_processing_limit() == 0
-                    or len(processing_job_ids) < local_processing_limit()
-                )
-                processing_job_ids.add(jobid)
+                processing_waiters[jobid] = processing_waiter_order(jobid)
+                processing_condition.notify_all()
+                try:
+                    await processing_condition.wait_for(
+                        lambda: processing_slot_available()
+                        and is_oldest_processing_waiter(jobid)
+                    )
+                    processing_job_ids.add(jobid)
+                finally:
+                    processing_waiters.pop(jobid, None)
+                    processing_condition.notify_all()
             active_processing = len(processing_job_ids)
 
     @asynccontextmanager

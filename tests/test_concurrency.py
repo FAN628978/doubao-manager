@@ -850,6 +850,116 @@ def test_same_account_does_not_deadlock_execution_and_account_lanes(tmp_path, mo
     asyncio.run(asyncio.wait_for(run(), timeout=5))
 
 
+def test_processing_slot_prefers_oldest_created_job_after_late_dispatch(
+    tmp_path, monkeypatch
+):
+    """较早创建的任务即使较晚放行，也必须排在较新的等待任务前面。"""
+    monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
+    monkeypatch.setenv("DOUBAO_MAX_CONCURRENT_ACCOUNTS", "0")
+    db, get_account, get_job = _make_scheduling_db(
+        tmp_path, ["account_1", "account_2", "account_3"]
+    )
+
+    async def run():
+        app = FastAPI()
+        blocker_started = asyncio.Event()
+        release_blocker = asyncio.Event()
+        old_started = asyncio.Event()
+        release_old = asyncio.Event()
+        new_started = asyncio.Event()
+        calls = []
+
+        async def fake_browser(account_id):
+            return account_id
+
+        async def fake_perform(
+            context, req, assets, target, on_status, on_page_url, on_binding,
+            on_manual_ready=None, confirmation_text="", close_on_success=False,
+            on_review_page=None,
+        ):
+            calls.append(req.prompt)
+            if req.prompt == "blocker":
+                blocker_started.set()
+                await release_blocker.wait()
+            elif req.prompt == "old":
+                old_started.set()
+                await release_old.wait()
+            else:
+                new_started.set()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"video")
+            return {
+                "output": str(target),
+                "video_url": "https://example.com/video.mp4",
+                "web_page_url": "https://www.doubao.com/chat/test",
+            }
+
+        monkeypatch.setattr(web_api, "perform", fake_perform)
+        web_api.mount_video_api(
+            app,
+            db=db,
+            get_account=get_account,
+            get_job=get_job,
+            browser=fake_browser,
+            base_dir=tmp_path,
+            downloads_dir=tmp_path / "data" / "videos",
+            serialize=dict,
+        )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://local"
+        ) as client:
+            await client.put(
+                "/api/settings/processing-limit", json={"processing_limit": 1}
+            )
+            await client.post("/api/v1/videos/generations", json={
+                "account_id": "account_1", "prompt": "blocker", "duration": 4,
+                "submit_mode": "auto", "auto_start": True,
+            })
+            await asyncio.wait_for(blocker_started.wait(), timeout=2)
+
+            old = (await client.post("/api/v1/videos/generations", json={
+                "account_id": "account_2", "prompt": "old", "duration": 4,
+                "submit_mode": "auto", "auto_start": False,
+            })).json()
+            new = (await client.post("/api/v1/videos/generations", json={
+                "account_id": "account_3", "prompt": "new", "duration": 4,
+                "submit_mode": "auto", "auto_start": False,
+            })).json()
+            with db() as conn:
+                conn.execute(
+                    "UPDATE jobs SET created_at=? WHERE id=?",
+                    ("2026-01-01T00:00:00+00:00", old["id"]),
+                )
+                conn.execute(
+                    "UPDATE jobs SET created_at=? WHERE id=?",
+                    ("2026-01-01T00:01:00+00:00", new["id"]),
+                )
+
+            dispatched_new = await client.post(
+                f"/api/v1/videos/generations/{new['id']}/dispatch"
+            )
+            assert dispatched_new.status_code == 200, dispatched_new.text
+            await asyncio.sleep(0.05)
+
+            dispatched = await client.post(
+                f"/api/v1/videos/generations/{old['id']}/dispatch"
+            )
+            assert dispatched.status_code == 200, dispatched.text
+            await asyncio.sleep(0.05)
+            release_blocker.set()
+
+            await asyncio.wait_for(old_started.wait(), timeout=2)
+            assert calls[:2] == ["blocker", "old"]
+            assert not new_started.is_set()
+
+            release_old.set()
+            await asyncio.wait_for(new_started.wait(), timeout=2)
+            assert calls == ["blocker", "old", "new"]
+
+    asyncio.run(asyncio.wait_for(run(), timeout=6))
+
+
 def test_auto_select_prefers_idle_account_over_best_fit_busy_account(tmp_path, monkeypatch):
     """自动选号先看是否空闲，再比剩余额度，不能把任务塞给正在生成的任务。"""
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
