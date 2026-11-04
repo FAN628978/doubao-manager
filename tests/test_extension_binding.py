@@ -207,7 +207,7 @@ def test_extension_can_only_mark_current_account_quota_exhausted(tmp_path, monke
             item for item in before["manual_controls"]
             if item["key"] == "exhaust_quota"
         )
-        assert control["label"] == "标记今日额度用完"
+        assert control["label"] == "额度清零"
         assert control["enabled"] is True
 
         marked = client.post(
@@ -231,7 +231,7 @@ def test_extension_can_only_mark_current_account_quota_exhausted(tmp_path, monke
             item for item in after["manual_controls"]
             if item["key"] == "exhaust_quota"
         )
-        assert control["label"] == "今日额度已用完"
+        assert control["label"] == "额度清零"
         assert control["enabled"] is False
 
         with application.db() as connection:

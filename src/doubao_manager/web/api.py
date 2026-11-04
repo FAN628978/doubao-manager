@@ -2038,7 +2038,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             })
         manual_controls.extend([{
             "key": "exhaust_quota",
-            "label": "今日额度已用完" if account_quota_exhausted else "标记今日额度用完",
+            "label": "额度清零",
             "enabled": bool(account_id) and not account_quota_exhausted,
             "reason": (
                 "该账号今日额度已用完，明日自动恢复"
