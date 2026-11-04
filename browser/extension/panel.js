@@ -99,12 +99,8 @@
           <div class="db-task-title"><b>${escapeHtml(task.task_name || task.shot_id || task.job_id)}</b><span>${escapeHtml(mode)}</span></div>
           <dl class="db-task-meta">
             <div><dt>账号</dt><dd>${escapeHtml(task.account_name || task.account_id || "待分配")}</dd></div>
-            <div><dt>项目</dt><dd>${escapeHtml(task.project_id || "—")}</dd></div>
-            <div><dt>集数</dt><dd>${escapeHtml(task.episode_id || "—")}</dd></div>
-            <div><dt>分镜</dt><dd>${escapeHtml(task.shot_id || "—")}</dd></div>
-            <div class="wide"><dt>任务 ID</dt><dd title="${escapeHtml(task.job_id)}">${escapeHtml(task.job_id)}</dd></div>
             <div><dt>状态</dt><dd>${escapeHtml(statusText)}</dd></div>
-            <div><dt>最近操作</dt><dd>${escapeHtml(formatTime(task.last_action_at))}</dd></div>
+            <div class="wide"><dt>最近操作</dt><dd>${escapeHtml(formatTime(task.last_action_at))}</dd></div>
           </dl>
           ${error ? `<div class="db-task-error"><b>当前异常</b><span>${escapeHtml(error)}</span></div>` : ""}
           ${controls ? `<section class="db-manual-controls ${task.takeover?.active ? "is-active" : ""}">

@@ -62,6 +62,7 @@ from .quota import (
     account_value,
     enforce_account_model,
     local_day,
+    quota_exhausted_setting_key,
     quota_held_today,
     quota_summary,
     recover_interrupted_jobs,
@@ -1501,7 +1502,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             for r in active_rows:
                 quota = quota_summary(c, r["id"])
                 remaining = quota["remaining_seconds"]
-                if ignore_quota or remaining >= required_seconds:
+                if not quota["manually_exhausted"] and (
+                    ignore_quota or remaining >= required_seconds
+                ):
                     candidates.append((r["id"], r["created_at"], remaining,
                                        int(account_value(r, "priority", 0) or 0)))
         if candidates:
@@ -2009,6 +2012,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         last_event = events_out[-1] if events_out else {}
         next_task = next_pending_task(item["id"])
         takeover_active = bool(item["web"].get("operator_takeover"))
+        account_id = item.get("account_id") or ""
+        account_quota_exhausted = False
+        if account_id:
+            with db() as c:
+                account_quota_exhausted = quota_summary(
+                    c, account_id
+                )["manually_exhausted"]
         manual_controls = []
         if takeover_active:
             manual_controls.append({
@@ -2027,6 +2037,17 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "confirm": "确认暂停当前任务的自动网页操作并由人工接管？同账号其他任务不受影响。",
             })
         manual_controls.extend([{
+            "key": "exhaust_quota",
+            "label": "今日额度已用完" if account_quota_exhausted else "标记今日额度用完",
+            "enabled": bool(account_id) and not account_quota_exhausted,
+            "reason": (
+                "该账号今日额度已用完，明日自动恢复"
+                if account_quota_exhausted else (
+                    "" if account_id else "当前任务尚未分配账号"
+                )
+            ),
+            "confirm": "仅将当前账号标记为今日额度用完；不会自动换号或重启任务，明日自动恢复。",
+        }, {
             "key": "restart_auto",
             "label": "换号自动执行",
             "enabled": True,
@@ -2071,6 +2092,40 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "manual_controls": manual_controls,
         }
 
+    @app.post("/api/v1/videos/generations/{jobid}/exhaust-account-quota", tags=["Chrome Extension"])
+    async def exhaust_account_quota(jobid: str, x_api_key: Optional[str] = Header(None)):
+        """Mark only the bound account's local quota as exhausted for today."""
+        auth(x_api_key); ensure_schema()
+        item = detail(jobid)
+        account_id = item.get("account_id") or ""
+        if not account_id:
+            raise HTTPException(409, "当前任务尚未分配账号")
+        get_account(account_id)
+        day = local_day()
+        with db() as c:
+            c.execute(
+                "INSERT INTO local_settings(key,value) VALUES(?, '1') "
+                "ON CONFLICT(key) DO UPDATE SET value='1'",
+                (quota_exhausted_setting_key(account_id, day),),
+            )
+            c.execute(
+                "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
+                (
+                    jobid,
+                    item["status"],
+                    f"已标记账号 {account_label(account_id)} 今日额度用完；明日自动恢复，任务未自动换号",
+                    ts(),
+                ),
+            )
+            quota = quota_summary(c, account_id)
+        return {
+            "ok": True,
+            "account_id": account_id,
+            "day": day,
+            "quota": quota,
+            "message": "已标记当前账号今日额度用完；请按需人工换号，明日自动恢复",
+        }
+
     @app.post("/api/v1/videos/generations/{jobid}/start",tags=["Doubao Web Video"])
     async def start(jobid:str,x_api_key:Optional[str]=Header(None)):
         auth(x_api_key); ensure_schema()
@@ -2083,6 +2138,11 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     @app.post("/api/v1/videos/generations/{jobid}/dispatch", tags=["Doubao Web Video"])
     async def dispatch_job(jobid: str, x_api_key: Optional[str] = Header(None)):
         """把待处理任务放行进入调度队列，保留任务既定的执行方式。"""
+        quota_job_prefix = "__exhaust_quota__"
+        if jobid.startswith(quota_job_prefix):
+            return await exhaust_account_quota(
+                jobid.removeprefix(quota_job_prefix), x_api_key
+            )
         auth(x_api_key); ensure_schema()
         item = detail(jobid)
         if item["status"] not in ("queued", "ready"):

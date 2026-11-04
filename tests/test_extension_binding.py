@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import app as application
 import web_api
+from doubao_manager.web.config import DAILY_VIDEO_SECONDS
+from doubao_manager.web.quota import quota_summary
 from doubao_manager.web.schema import ensure_schema
 
 
@@ -155,6 +157,12 @@ def test_extension_panel_actions_do_not_render_confirmation_prompt():
     assert "data-role=\"confirm\"" not in panel
 
 
+def test_extension_panel_hides_redundant_task_metadata():
+    panel = (ROOT / "browser/extension/panel.js").read_text(encoding="utf-8")
+    for label in ("项目", "集数", "分镜", "任务 ID"):
+        assert f"<dt>{label}</dt>" not in panel
+
+
 def test_extension_panel_actions_are_not_frozen_while_requesting():
     content = (ROOT / "browser/extension/content.js").read_text(encoding="utf-8")
     panel = (ROOT / "browser/extension/panel.js").read_text(encoding="utf-8")
@@ -176,15 +184,75 @@ def test_extension_actions_call_existing_task_apis():
     expected = [
         "/dispatch", "/prepare-manual", "/send?confirm_send=true",
         "/send-confirmation?confirm_send=true", "/recall?force_redownload=true",
-        "/push-result", "/dispatch-next",
+        "/push-result", "/exhaust-account-quota", "/dispatch-next",
     ]
     for endpoint in expected:
         assert endpoint in background
     assert "taskActions[message.action]" in background
     assert "当前扩展版本不支持任务操作" in background
     assert "任务 ID 缺失" in background
-    assert 'action === "next_task" ? "dispatch" : action' in content
-    assert 'action === "next_task" ? task.next_task_job_id : task.job_id' in content
+    assert '["next_task", "exhaust_quota"].includes(action) ? "dispatch" : action' in content
+    assert '`__exhaust_quota__${task.job_id}`' in content
+
+
+def test_extension_can_only_mark_current_account_quota_exhausted(tmp_path, monkeypatch):
+    bridge = build_bridge(tmp_path, monkeypatch)
+    token = asyncio.run(bridge.state.video_bind_task_page("job_0", BoundPage()))
+
+    with TestClient(bridge) as client:
+        before = client.get(
+            "/api/v1/extension/tasks/resolve", params={"binding_token": token}
+        ).json()
+        control = next(
+            item for item in before["manual_controls"]
+            if item["key"] == "exhaust_quota"
+        )
+        assert control["label"] == "标记今日额度用完"
+        assert control["enabled"] is True
+
+        marked = client.post(
+            "/api/v1/videos/generations/__exhaust_quota__job_0/dispatch"
+        )
+        assert marked.status_code == 200, marked.text
+        body = marked.json()
+        assert body["account_id"] == "account_1"
+        assert body["quota"]["manually_exhausted"] is True
+        assert body["quota"]["consumed_seconds"] == 0
+        assert body["quota"]["remaining_seconds"] == 0
+
+        job = client.get("/api/v1/videos/generations/job_0").json()
+        assert job["status"] == "awaiting_manual_send"
+        assert job["account_id"] == "account_1"
+
+        after = client.get(
+            "/api/v1/extension/tasks/resolve", params={"binding_token": token}
+        ).json()
+        control = next(
+            item for item in after["manual_controls"]
+            if item["key"] == "exhaust_quota"
+        )
+        assert control["label"] == "今日额度已用完"
+        assert control["enabled"] is False
+
+        with application.db() as connection:
+            connection.execute(
+                "INSERT INTO local_settings(key,value) VALUES('ignore_quota_check','1') "
+                "ON CONFLICT(key) DO UPDATE SET value='1'"
+            )
+            connection.execute(
+                "INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,status,created_at,updated_at) "
+                "VALUES('job_probe','','','','prompt','queued','2026-01-01','2026-01-01')"
+            )
+        assert bridge.state.video_assign_account_for("job_probe") == "account_2"
+
+    with application.db() as connection:
+        tomorrow = quota_summary(connection, "account_1", day="2099-01-01")
+        assert tomorrow["manually_exhausted"] is False
+        assert tomorrow["remaining_seconds"] == DAILY_VIDEO_SECONDS
+        account = connection.execute(
+            "SELECT paused FROM accounts WHERE id='account_1'"
+        ).fetchone()
+        assert account["paused"] == 0
 
 
 def test_extension_always_exposes_next_pending_control(tmp_path, monkeypatch):

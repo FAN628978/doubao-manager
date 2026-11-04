@@ -37,6 +37,22 @@ def local_day() -> str:
     return datetime.now().astimezone().strftime("%Y-%m-%d")
 
 
+def quota_exhausted_setting_key(account_id: str, day: str | None = None) -> str:
+    return f"account_quota_exhausted:{account_id}:{day or local_day()}"
+
+
+def manually_exhausted(c: sqlite3.Connection, account_id: str, day: str | None = None) -> bool:
+    if not c.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='local_settings'"
+    ).fetchone():
+        return False
+    row = c.execute(
+        "SELECT value FROM local_settings WHERE key=?",
+        (quota_exhausted_setting_key(account_id, day),),
+    ).fetchone()
+    return bool(row) and str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
+
+
 def quota_summary(c: sqlite3.Connection, account_id: str, day: str | None = None) -> dict:
     """读取某账号某天的额度记录：已消耗 / 排队占用 / 剩余 / 上限。"""
     day = day or local_day()
@@ -49,6 +65,7 @@ def quota_summary(c: sqlite3.Connection, account_id: str, day: str | None = None
     ).fetchone() else None
     reserved = row["reserved_seconds"] if row else 0
     consumed = row["consumed_seconds"] if row else 0
+    exhausted = manually_exhausted(c, account_id, day)
     unknown = 0
     if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='video_web_jobs'").fetchone():
         unknown_row = c.execute(
@@ -63,7 +80,8 @@ def quota_summary(c: sqlite3.Connection, account_id: str, day: str | None = None
             "reserved_seconds": reserved,
             "unknown_seconds": unknown,
             "queued_reserved_seconds": max(0, reserved - unknown),
-            "remaining_seconds": max(0, DAILY_VIDEO_SECONDS - consumed - reserved)}
+            "manually_exhausted": exhausted,
+            "remaining_seconds": 0 if exhausted else max(0, DAILY_VIDEO_SECONDS - consumed - reserved)}
 
 
 def reserve_quota(c: sqlite3.Connection, account_id: str, seconds: int, day: str | None = None) -> None:

@@ -49,8 +49,10 @@
           return;
         }
         panel.feedback(`正在执行：${definition.label}…`);
-        const runtimeAction = action === "next_task" ? "dispatch" : action;
-        const runtimeJobId = action === "next_task" ? task.next_task_job_id : task.job_id;
+        const runtimeAction = ["next_task", "exhaust_quota"].includes(action) ? "dispatch" : action;
+        const runtimeJobId = action === "next_task"
+          ? task.next_task_job_id
+          : action === "exhaust_quota" ? `__exhaust_quota__${task.job_id}` : task.job_id;
         const response = await send({
           type: "task.action", action: runtimeAction, jobId: runtimeJobId, presetId
         });

@@ -14,6 +14,7 @@ const taskActions = {
   push: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/push-result`, {method: "POST"}),
   takeover: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/takeover`, {method: "POST"}),
   resume_takeover: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/resume-takeover`, {method: "POST"}),
+  exhaust_quota: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/exhaust-account-quota`, {method: "POST"}),
   restart_auto: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/restart-auto`, {method: "POST"}),
   next_task: jobId => localApi(`/api/v1/videos/generations/${encodeURIComponent(jobId)}/dispatch-next`, {method: "POST"})
 };

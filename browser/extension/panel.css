@@ -35,6 +35,8 @@ footer.is-error { color: #fb7185; }
 .db-manual-control:hover:not(:disabled) { color: #e0f2fe; background: rgba(14,165,233,.22); box-shadow: 0 6px 15px rgba(3,105,161,.16); }
 .db-manual-control[data-task-action="restart_auto"] { color: #ddd6fe; background: rgba(139,92,246,.13); }
 .db-manual-control[data-task-action="restart_auto"]:hover:not(:disabled) { color: #ede9fe; background: rgba(139,92,246,.24); box-shadow: 0 6px 15px rgba(109,40,217,.18); }
+.db-manual-control[data-task-action="exhaust_quota"] { color: #fde68a; background: rgba(245,158,11,.13); }
+.db-manual-control[data-task-action="exhaust_quota"]:hover:not(:disabled) { color: #fef3c7; background: rgba(245,158,11,.24); box-shadow: 0 6px 15px rgba(180,83,9,.18); }
 .db-manual-control[data-task-action="next_task"] { color: #bbf7d0; background: rgba(34,197,94,.12); }
 .db-manual-control[data-task-action="next_task"]:hover:not(:disabled) { color: #dcfce7; background: rgba(34,197,94,.22); box-shadow: 0 6px 15px rgba(21,128,61,.18); }
 .db-manual-control:disabled { cursor: not-allowed; opacity: .4; }

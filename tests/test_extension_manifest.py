@@ -12,7 +12,7 @@ from doubao_manager.chrome_runtime import extension_launch_args
 def test_manifest_v3_targets_only_doubao_pages():
     manifest = json.loads((ROOT / "browser/extension/manifest.json").read_text(encoding="utf-8"))
     assert manifest["manifest_version"] == 3
-    assert tuple(map(int, manifest["version"].split("."))) >= (1, 0, 1)
+    assert tuple(map(int, manifest["version"].split("."))) >= (1, 0, 2)
     assert manifest["background"] == {"service_worker": "background.js", "type": "module"}
     assert manifest["options_ui"] == {"page": "options.html", "open_in_tab": True}
     matches = manifest["content_scripts"][0]["matches"]

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "豆包分镜任务面板",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "豆包管理工具的任务控制界面，所有操作仍由本地 Python 服务执行。",
   "permissions": ["storage"],
   "host_permissions": [
