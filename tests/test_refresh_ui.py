@@ -86,6 +86,8 @@ class Server:
         self.feedback_requests = 0
         self.auto_dispatch_enabled = True
         self.auto_dispatch_updates = []
+        self.auto_dispatch_interval_seconds = 5
+        self.auto_dispatch_interval_updates = []
         self.accepting_tasks = True
         self.task_acceptance_updates = []
         self.submit_mode = "auto"
@@ -171,6 +173,23 @@ class Server:
                 content_type="application/json",
                 body=_json({
                     "auto_dispatch_enabled": self.auto_dispatch_enabled,
+                }),
+            )
+        elif url.endswith("/api/settings/auto-dispatch-interval"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.auto_dispatch_interval_seconds = int(
+                    body.get("auto_dispatch_interval_seconds") or 5
+                )
+                self.auto_dispatch_interval_updates.append(
+                    self.auto_dispatch_interval_seconds
+                )
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json({
+                    "auto_dispatch_interval_seconds":
+                        self.auto_dispatch_interval_seconds,
                 }),
             )
         elif url.endswith("/api/settings/task-acceptance"):
@@ -1083,12 +1102,16 @@ def test_automation_switches_are_saved_independently():
                 assert await page.is_checked("#taskAcceptanceSettingToggle")
                 assert await page.is_checked("#autoDispatchSettingToggle")
                 assert await page.is_checked("#autoExecutionSettingToggle")
+                assert await page.input_value(
+                    "#autoDispatchIntervalSetting"
+                ) == "5"
                 assert await page.inner_text("#dispatchFlowState") == "自动进入调度"
                 assert await page.inner_text("#executionFlowState") == "自动执行完整流程"
                 assert await page.input_value("#memberModelSetting") == "Seedance 2.0"
                 assert await page.input_value("#nonMemberModelSetting") == "Seedance 2.0 Mini"
 
                 await page.click("#autoDispatchSettingToggle")
+                await page.fill("#autoDispatchIntervalSetting", "12")
                 await page.select_option("#memberModelSetting", "Seedance 2.0 Fast")
                 await page.select_option("#nonMemberModelSetting", "Seedance 2.5")
                 assert not await page.is_checked("#autoDispatchSettingToggle")
@@ -1100,6 +1123,7 @@ def test_automation_switches_are_saved_independently():
                 )
 
                 assert server.auto_dispatch_updates == [False]
+                assert server.auto_dispatch_interval_updates == [12]
                 assert server.submit_mode_updates == ["auto"]
                 assert server.video_model_updates == [
                     ("Seedance 2.0 Fast", "Seedance 2.5")
@@ -1107,6 +1131,9 @@ def test_automation_switches_are_saved_independently():
                 assert await page.evaluate(
                     "() => state.autoDispatchEnabled"
                 ) is False
+                assert await page.evaluate(
+                    "() => state.autoDispatchIntervalSeconds"
+                ) == 12
                 assert await page.evaluate("() => state.submitMode") == "auto"
             finally:
                 await browser.close()

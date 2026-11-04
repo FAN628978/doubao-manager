@@ -44,6 +44,7 @@ from .config import (
     VIDEO_MODELS,
 )
 from .models import (
+    AutoDispatchIntervalSetting,
     AutoDispatchSetting,
     AutoSwitchOnExceptionSetting,
     ClaudeRecoverySetting,
@@ -519,6 +520,23 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             return local_submit_mode() == "auto"
         return str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
 
+    def local_auto_dispatch_interval_seconds() -> int:
+        try:
+            fallback = max(1, int(float(os.getenv("DOUBAO_QUEUE_TICK_SECONDS", "5"))))
+        except ValueError:
+            fallback = 5
+        with db() as c:
+            row = c.execute(
+                "SELECT value FROM local_settings "
+                "WHERE key='auto_dispatch_interval_seconds'"
+            ).fetchone()
+        if row is None:
+            return fallback
+        try:
+            return min(3600, max(1, int(row["value"])))
+        except (TypeError, ValueError):
+            return fallback
+
     def local_accepting_tasks() -> bool:
         with db() as c:
             row = c.execute(
@@ -614,6 +632,29 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 ("1" if payload.auto_dispatch_enabled else "0",),
             )
         return {"auto_dispatch_enabled": payload.auto_dispatch_enabled}
+
+    @app.get("/api/settings/auto-dispatch-interval", tags=["Local Settings"])
+    async def get_auto_dispatch_interval_setting():
+        ensure_schema()
+        return {
+            "auto_dispatch_interval_seconds": local_auto_dispatch_interval_seconds()
+        }
+
+    @app.put("/api/settings/auto-dispatch-interval", tags=["Local Settings"])
+    async def update_auto_dispatch_interval_setting(
+        payload: AutoDispatchIntervalSetting,
+    ):
+        ensure_schema()
+        with db() as c:
+            c.execute(
+                "INSERT INTO local_settings(key,value) "
+                "VALUES('auto_dispatch_interval_seconds',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(payload.auto_dispatch_interval_seconds),),
+            )
+        return {
+            "auto_dispatch_interval_seconds": payload.auto_dispatch_interval_seconds
+        }
 
     @app.get("/api/settings/task-acceptance", tags=["Local Settings"])
     async def get_task_acceptance_setting():
@@ -4275,12 +4316,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         return started
 
     async def queue_tick_loop() -> None:
-        try:
-            interval = max(1.0, float(os.getenv("DOUBAO_QUEUE_TICK_SECONDS", "5")))
-        except ValueError:
-            interval = 5.0
         while True:
-            await asyncio.sleep(interval)
+            await asyncio.sleep(local_auto_dispatch_interval_seconds())
             try:
                 redispatch_queued_jobs()
             except asyncio.CancelledError:

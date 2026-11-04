@@ -65,6 +65,10 @@ class AutoDispatchSetting(BaseModel):
     auto_dispatch_enabled: bool
 
 
+class AutoDispatchIntervalSetting(BaseModel):
+    auto_dispatch_interval_seconds: int = Field(ge=1, le=3600)
+
+
 class TaskAcceptanceSetting(BaseModel):
     accepting_tasks: bool
 

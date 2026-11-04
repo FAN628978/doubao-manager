@@ -218,6 +218,27 @@ def test_setting_default_is_manual_and_persists(bridge):
     assert client.get("/api/settings/auto-dispatch").json()["auto_dispatch_enabled"] is True
 
 
+def test_auto_dispatch_interval_defaults_and_persists(bridge):
+    client = bridge["client"]
+    assert client.get("/api/settings/auto-dispatch-interval").json() == {
+        "auto_dispatch_interval_seconds": 5,
+    }
+
+    updated = client.put(
+        "/api/settings/auto-dispatch-interval",
+        json={"auto_dispatch_interval_seconds": 12},
+    )
+    assert updated.status_code == 200
+    assert updated.json() == {"auto_dispatch_interval_seconds": 12}
+    assert client.get("/api/settings/auto-dispatch-interval").json() == {
+        "auto_dispatch_interval_seconds": 12,
+    }
+    assert client.put(
+        "/api/settings/auto-dispatch-interval",
+        json={"auto_dispatch_interval_seconds": 0},
+    ).status_code == 422
+
+
 def test_auto_switch_on_exception_setting_defaults_off_and_persists(bridge):
     client = bridge["client"]
     assert client.get("/api/settings/auto-switch-on-exception").json() == {
