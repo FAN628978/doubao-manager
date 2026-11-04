@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from playwright.async_api import Page, APIRequestContext, async_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -367,6 +368,85 @@ def test_manual_fail_verdict_is_visible_to_h3_and_releases_quota(tmp_path, monke
             assert rejected.status_code == 409
 
     asyncio.run(run())
+
+
+def test_cancel_queued_task_releases_quota_and_allows_delete(tmp_path, monkeypatch):
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'cancel.sqlite3')
+    with TestClient(application.app) as client:
+        account_id = client.post('/api/accounts', json={'name': 'cancel-account'}).json()['id']
+        created = client.post('/api/v1/videos/generations', json={
+            'account_id': account_id,
+            'prompt': '取消任务测试',
+            'duration': 4,
+            'submit_mode': 'auto',
+            'auto_start': False,
+        })
+        assert created.status_code == 202, created.text
+        jobid = created.json()['id']
+
+        assert client.post(f'/api/v1/videos/generations/{jobid}/cancel').status_code == 422
+        canceled = client.post(
+            f'/api/v1/videos/generations/{jobid}/cancel?confirm_cancel=true'
+        )
+        assert canceled.status_code == 200, canceled.text
+        body = canceled.json()
+        assert body['status'] == 'failed'
+        assert body['web']['error_code'] == 'USER_CANCELED'
+        assert body['error_message'] == '任务已由操作者取消'
+        assert body['quota']['reserved_seconds'] == 0
+
+        repeated = client.post(
+            f'/api/v1/videos/generations/{jobid}/cancel?confirm_cancel=true'
+        )
+        assert repeated.status_code == 200
+        deleted = client.post('/api/jobs/bulk-delete', json={'job_ids': [jobid]})
+        assert deleted.status_code == 200, deleted.text
+        assert deleted.json()['deleted'] == 1
+
+
+def test_cancel_task_pushes_canceled_status_to_h3(tmp_path, monkeypatch):
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'cancel-push.sqlite3')
+    captured = {}
+
+    class FakeResponse:
+        is_error = False
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, *, headers, data):
+            captured.update(url=url, token=headers['X-Doubao-Push-Token'], data=data)
+            return FakeResponse()
+
+    monkeypatch.setattr(web_api.httpx, 'AsyncClient', FakeClient)
+    token = 'cancel-push-token-1234567890'
+    with TestClient(application.app) as client:
+        created = client.post('/api/v1/videos/generations', json={
+            'prompt': '取消并同步 H3',
+            'auto_start': False,
+            'result_push_url': 'http://127.0.0.1:3013/api/v1/doubao-results/8758',
+            'result_push_token': token,
+        })
+        assert created.status_code == 202, created.text
+        jobid = created.json()['id']
+
+        canceled = client.post(
+            f'/api/v1/videos/generations/{jobid}/cancel?confirm_cancel=true'
+        )
+        assert canceled.status_code == 200, canceled.text
+        assert canceled.json()['web']['delivery_state'] == 'delivered'
+        assert captured == {
+            'url': 'http://127.0.0.1:3013/api/v1/doubao-results/8758',
+            'token': token,
+            'data': {'status': 'canceled', 'error_code': 'USER_CANCELED'},
+        }
 
 
 def test_restart_during_manual_send_releases_quota_until_download(tmp_path, monkeypatch):

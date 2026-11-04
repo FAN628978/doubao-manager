@@ -436,6 +436,42 @@ def test_search_focus_does_not_freeze_auto_refresh():
     asyncio.run(run())
 
 
+def test_job_search_matches_project_episode_and_shot_path():
+    async def run():
+        server = Server()
+        server.jobs = [
+            _job(
+                "job_match", status="generating",
+                project_id="摄政王-上端", episode_id="第十四集", shot_id="分镜#15",
+                prompt="不会参与搜索的提示词",
+            ),
+            _job(
+                "job_other", status="generating",
+                project_id="摄政王-上端", episode_id="第十三集", shot_id="分镜#15",
+            ),
+        ]
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => switchView('jobs')")
+                await page.fill(
+                    "#jobSearch", "摄政王-上端 / 第十四集 / 分镜#15"
+                )
+                rows = page.locator("#jobsTable tr[data-job-id]")
+                assert await rows.count() == 1
+                assert await rows.first.get_attribute("data-job-id") == "job_match"
+                matches = rows.first.locator("mark.job-search-match")
+                assert await matches.count() == 3
+                assert await matches.all_inner_texts() == [
+                    "摄政王-上端", "第十四集", "分镜#15",
+                ]
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
 def test_silent_refresh_failure_is_visible_and_recovers():
     """静默刷新失败要露出提示，恢复后自动消失。"""
 
@@ -733,6 +769,19 @@ def test_subgroup_classification_logic():
     for wait in ("awaiting_manual_send", "needs_review"):
         assert f"'{wait}'" in abnormal
         assert f"'{wait}'" not in normal
+
+
+def test_cancel_task_controls_use_dedicated_endpoint():
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "src" / "static" / "app.js").read_text(encoding="utf-8")
+    html = (root / "src" / "static" / "index.html").read_text(encoding="utf-8")
+
+    assert "action==='cancel'" in source
+    assert "/cancel?confirm_cancel=true" in source
+    assert "cancelSelectedJobs()" in html
+    assert 'data-bulk-action="cancel"' in html
+    assert "onclick=\"cancelJob('${esc(j.id)}')\"" in source
+    assert '>取消任务</button>' in source
 
 
 def test_processing_stat_includes_attention(tmp_path, monkeypatch):

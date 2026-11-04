@@ -323,17 +323,20 @@ def test_api_validation_and_idempotency(tmp_path,monkeypatch):
             r=client.post('/api/v1/videos/generations',json={
                 'account_id':acc,'prompt':'你好','mode':mode,**payload})
             assert r.status_code==422,r.text
-        body={'account_id':acc,'prompt':'猫跳跃','mode':'image2video',
+        body={'job_id':'job_42','account_id':acc,'prompt':'猫跳跃','mode':'image2video',
               'first_frame_asset_id':aid,'ratio':'9:16','duration':10,
               'idempotency_key':'same-request','task_name':'视频任务 #42','auto_start':False}
         first=client.post('/api/v1/videos/generations',json=body)
         assert first.status_code==202,first.text
+        assert first.json()['id']=='job_42'
         second=client.post('/api/v1/videos/generations',json=body)
         assert second.status_code==202 and first.json()['id']==second.json()['id']
         assert second.json()['task_name'] == '视频任务 #42'
         assert next(j for j in client.get('/api/jobs').json() if j['id'] == first.json()['id'])['task_name'] == '视频任务 #42'
         different=client.post('/api/v1/videos/generations',json={**body,'prompt':'不同内容'})
         assert different.status_code==409
+        invalid_id=client.post('/api/v1/videos/generations',json={**body,'job_id':'job_random'})
+        assert invalid_id.status_code==422
         jobid=first.json()['id']
         forged=client.patch(f'/api/jobs/{jobid}',json={'status':'downloaded'})
         assert forged.status_code==409
@@ -580,6 +583,7 @@ def test_single_entry_uses_names(tmp_path, monkeypatch):
     with TestClient(application.app) as client:
         account_id = client.post('/api/accounts', json={'name': 'name-fields'}).json()['id']
         response = client.post('/api/v1/videos', data={
+            'job_id': 'job_8758',
             'account_id': account_id,
             'prompt': 'test prompt',
             'project_name': '\u98df\u8bf1\u5343\u91d1',
@@ -589,6 +593,7 @@ def test_single_entry_uses_names(tmp_path, monkeypatch):
             'auto_start': 'false',
         })
         assert response.status_code == 202, response.text
+        assert response.json()['job_id'] == 'job_8758'
         job = next(item for item in client.get('/api/jobs').json()
                    if item['id'] == response.json()['job_id'])
         assert job['project_id'] == '\u98df\u8bf1\u5343\u91d1'

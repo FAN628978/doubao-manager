@@ -5,6 +5,8 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, model_validator
 
 class VideoRequest(BaseModel):
+    # 外部 H3 任务可指定稳定 ID（例如 H3 8758 对应 job_8758）。
+    job_id: Optional[str] = Field(default=None, pattern=r"^job_[1-9]\d*$", max_length=64)
     # 留空 = 进入“待处理”后不绑定账号；任务进入“正在处理”前才分配账号。
     account_id: Optional[str] = Field(default=None)
     project_id: str = Field(default="", max_length=120)

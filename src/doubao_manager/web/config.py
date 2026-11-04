@@ -12,6 +12,8 @@ MANUAL_WAIT = "awaiting_manual_send"
 # 操作者在管理台明确判定失败：与自动检测到的 failed 区分开，H3 收到该错误码后不再把
 # manual 任务当成“还能重新发送”而继续等待。
 MANUAL_FAILED = "MANUAL_CONFIRMED_FAILED"
+# 操作者主动取消：任务停止、释放资源，并进入可删除的 failed 终态。
+USER_CANCELED = "USER_CANCELED"
 
 # Doubao web drives video generation as a chat conversation. Observed on 2026-10-28:
 # the assistant echoes the parsed parameters and waits for the user to confirm before

@@ -41,6 +41,7 @@ from .config import (
     MODES,
     REAL_CHAT_URL,
     TERMINAL,
+    USER_CANCELED,
     VIDEO_MODELS,
 )
 from .models import (
@@ -793,7 +794,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     def fingerprint(req):
         # Display naming is metadata, not generation input; changing it must not break
         # idempotent reuse of an already submitted H3 task.
-        val = req.model_dump(exclude={"idempotency_key", "auto_start", "task_name", "model", "result_push_url", "result_push_token"})
+        val = req.model_dump(exclude={"job_id", "idempotency_key", "auto_start", "task_name", "model", "result_push_url", "result_push_token"})
         return hashlib.sha256(json.dumps(val, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def resolve_assets(req):
@@ -1104,6 +1105,73 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         task = asyncio.create_task(deliver())
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
+
+    async def notify_cancellation(jobid: str) -> bool:
+        """Push a local operator cancellation back to its originating H3 task."""
+        with db() as c:
+            push = c.execute(
+                "SELECT result_push_url,result_push_token,delivery_attempts "
+                "FROM video_web_jobs WHERE job_id=?",
+                (jobid,),
+            ).fetchone()
+        if not push or not push["result_push_url"] or not push["result_push_token"]:
+            return False
+
+        parsed = urlparse(push["result_push_url"])
+        if parsed.scheme not in ("http", "https") or parsed.hostname not in (
+            "127.0.0.1", "localhost", "::1"
+        ):
+            return False
+
+        attempt = int(push["delivery_attempts"] or 0) + 1
+        with db() as c:
+            c.execute(
+                "UPDATE video_web_jobs SET delivery_state='pending',"
+                "delivery_attempts=?,delivery_error='',delivery_next_retry_at='' "
+                "WHERE job_id=?",
+                (attempt, jobid),
+            )
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(15.0, connect=5.0)
+            ) as client:
+                response = await client.post(
+                    push["result_push_url"],
+                    headers={"X-Doubao-Push-Token": push["result_push_token"]},
+                    data={"status": "canceled", "error_code": USER_CANCELED},
+                )
+            if response.is_error:
+                raise RuntimeError(
+                    f"H3 返回 HTTP {response.status_code}：{response.text[:300]}"
+                )
+        except Exception as exc:
+            message = str(exc)[:500]
+            with db() as c:
+                c.execute(
+                    "UPDATE video_web_jobs SET delivery_state='failed',"
+                    "delivery_error=?,result_push_error=? WHERE job_id=?",
+                    (message, message, jobid),
+                )
+                c.execute(
+                    "INSERT INTO video_web_events(job_id,status,message,timestamp) "
+                    "VALUES(?,?,?,?)",
+                    (jobid, "failed", f"任务已取消，但同步 H3 失败：{message}", ts()),
+                )
+            return False
+
+        with db() as c:
+            c.execute(
+                "UPDATE video_web_jobs SET delivery_state='delivered',"
+                "delivery_error='',delivery_next_retry_at='',result_push_error='' "
+                "WHERE job_id=?",
+                (jobid,),
+            )
+            c.execute(
+                "INSERT INTO video_web_events(job_id,status,message,timestamp) "
+                "VALUES(?,?,?,?)",
+                (jobid, "failed", "取消状态已同步到 H3", ts()),
+            )
+        return True
 
     async def finish_downloaded(jobid: str, message: str, result: dict,
                                 result_source: str = "web_automated",
@@ -1810,7 +1878,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                                   (req.task_name.strip(), req.result_push_url or "", req.result_push_url or "",
                                    req.result_push_token or "", req.result_push_token or "", previous["job_id"]))
                 return detail(previous["job_id"])
-        jobid = "job_" + uuid.uuid4().hex[:12]
+        jobid = req.job_id or ("job_" + uuid.uuid4().hex[:12])
         stamp = ts()
         payload = req.model_dump(include={"first_frame_asset_id", "last_frame_asset_id", "reference_asset_ids"}, exclude_none=True)
         try:
@@ -2472,6 +2540,56 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if item["status"] == "failed" and item["web"].get("error_code") == MANUAL_FAILED:
             return item
         emit(jobid,"failed","人工判定失败：H3/外部调度将收到失败状态，不再等待该任务",code=MANUAL_FAILED)
+        return detail(jobid)
+
+    @app.post("/api/v1/videos/generations/{jobid}/cancel", tags=["Doubao Web Video"])
+    async def cancel_generation(jobid: str, confirm_cancel: bool = False,
+                                x_api_key: Optional[str] = Header(None)):
+        """Cancel one queued/running web task and release all of its local resources."""
+        auth(x_api_key); ensure_schema()
+        if not confirm_cancel:
+            raise HTTPException(422, "必须明确确认取消任务")
+        item = detail(jobid)
+        if item["status"] == "downloaded":
+            raise HTTPException(409, "任务已处理完成，不能取消")
+        if item["status"] == "failed":
+            if item["web"].get("error_code") == USER_CANCELED:
+                if item["web"].get("delivery_state") != "delivered":
+                    await notify_cancellation(jobid)
+                return detail(jobid)
+            raise HTTPException(409, "任务已经结束，无需取消")
+
+        cancel_recovery = getattr(recovery_service, "cancel_job", None)
+        if cancel_recovery is not None:
+            await cancel_recovery(jobid)
+
+        task = pending.get(jobid)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            if pending.get(jobid) is task:
+                pending.pop(jobid, None)
+
+        emit(jobid, "failed", "任务已由操作者取消", code=USER_CANCELED)
+        await release_processing_job(jobid)
+        account_id = item.get("account_id") or ""
+        if account_id:
+            await release_account_slot(jobid, account_id)
+            schedule_idle_close(account_id, jobid)
+        page = prepared_pages.pop(jobid, None)
+        if page is not None:
+            try:
+                if not page.is_closed():
+                    await page.close()
+            except Exception:
+                pass
+        with db() as c:
+            c.execute(
+                "UPDATE video_web_jobs SET operator_takeover=0,takeover_status='' "
+                "WHERE job_id=?",
+                (jobid,),
+            )
+        await notify_cancellation(jobid)
         return detail(jobid)
 
     @app.post("/api/v1/videos/generations/{jobid}/copy", status_code=202,
@@ -4479,6 +4597,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     @app.post("/api/v1/videos", status_code=202, tags=["Doubao Web Video"])
     async def create_video_v1(
+        job_id: Optional[str] = Form(default=None),
         account_id: Optional[str] = Form(default=None),
         prompt: str = Form(...),
         mode: str = Form("text2video"),
@@ -4530,7 +4649,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             raise HTTPException(422, "参考图模式需要 1～9 个 reference 文件")
 
         try:
-            req = VideoRequest(account_id=account_id, prompt=prompt, mode=mode, ratio=ratio, duration=duration,
+            req = VideoRequest(job_id=job_id, account_id=account_id, prompt=prompt, mode=mode, ratio=ratio, duration=duration,
                                model=model, project_id=project_name.strip() or project_id,
                                episode_id=episode_name.strip() or episode_id,
                                shot_id=shot_name.strip() or shot_id, task_name=task_name,

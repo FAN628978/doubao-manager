@@ -100,6 +100,7 @@ class ExceptionRecoveryService:
         ).rstrip("/")
         self.enabled_provider = enabled_provider
         self._tasks: set[asyncio.Task] = set()
+        self._job_tasks: dict[str, asyncio.Task] = {}
         self._active_job_ids: set[str] = set()
         self._log_lock = asyncio.Lock()
         self._last_scheduled: dict[str, float] = {}
@@ -248,9 +249,12 @@ class ExceptionRecoveryService:
             )
         )
         self._tasks.add(task)
+        self._job_tasks[job_id] = task
 
         def finished(completed: asyncio.Task) -> None:
             self._tasks.discard(completed)
+            if self._job_tasks.get(job_id) is completed:
+                self._job_tasks.pop(job_id, None)
             self._active_job_ids.discard(job_id)
             if not account_key:
                 return
@@ -261,6 +265,15 @@ class ExceptionRecoveryService:
                 self._active_accounts.pop(account_key, None)
 
         task.add_done_callback(finished)
+        return True
+
+    async def cancel_job(self, job_id: str) -> bool:
+        """Cancel recovery for one exact job without affecting other jobs."""
+        task = self._job_tasks.get(job_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         return True
 
     async def wait_for_idle(self) -> None:
