@@ -37,7 +37,8 @@ const handlers = {
   async "task.action"(message) {
     const action = taskActions[message.action];
     const jobId = String(message.jobId || "").trim();
-    if (!action || !jobId) throw new Error("未知任务操作");
+    if (!action) throw new Error(`当前扩展版本不支持任务操作：${message.action || "空"}，请重新加载扩展`);
+    if (!jobId) throw new Error("任务 ID 缺失，请刷新任务页面后重试");
     return action(jobId, message);
   }
 };

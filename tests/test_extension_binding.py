@@ -172,6 +172,7 @@ def test_extension_panel_shows_resumed_recall_as_generating():
 
 def test_extension_actions_call_existing_task_apis():
     background = (ROOT / "browser/extension/background.js").read_text(encoding="utf-8")
+    content = (ROOT / "browser/extension/content.js").read_text(encoding="utf-8")
     expected = [
         "/dispatch", "/prepare-manual", "/send?confirm_send=true",
         "/send-confirmation?confirm_send=true", "/recall?force_redownload=true",
@@ -180,6 +181,10 @@ def test_extension_actions_call_existing_task_apis():
     for endpoint in expected:
         assert endpoint in background
     assert "taskActions[message.action]" in background
+    assert "当前扩展版本不支持任务操作" in background
+    assert "任务 ID 缺失" in background
+    assert 'action === "next_task" ? "dispatch" : action' in content
+    assert 'action === "next_task" ? task.next_task_job_id : task.job_id' in content
 
 
 def test_extension_always_exposes_next_pending_control(tmp_path, monkeypatch):
@@ -194,6 +199,7 @@ def test_extension_always_exposes_next_pending_control(tmp_path, monkeypatch):
         )
         assert control["label"] == "下一个任务"
         assert control["enabled"] is False
+        assert empty["next_task_job_id"] == ""
 
         with application.db() as connection:
             connection.execute(
@@ -206,6 +212,7 @@ def test_extension_always_exposes_next_pending_control(tmp_path, monkeypatch):
             item for item in available["manual_controls"] if item["key"] == "next_task"
         )
         assert control["enabled"] is True
+        assert available["next_task_job_id"] == "job_1"
 
 
 def test_extension_restart_auto_control_never_freezes(tmp_path, monkeypatch):

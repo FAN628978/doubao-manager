@@ -2041,6 +2041,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         }])
         return {
             "job_id": item["id"],
+            "next_task_job_id": next_task["id"] if next_task else "",
             "account_id": item.get("account_id") or "",
             "account_name": account_name,
             "project_id": item.get("project_id") or "",

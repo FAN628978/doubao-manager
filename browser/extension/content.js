@@ -49,8 +49,10 @@
           return;
         }
         panel.feedback(`正在执行：${definition.label}…`);
+        const runtimeAction = action === "next_task" ? "dispatch" : action;
+        const runtimeJobId = action === "next_task" ? task.next_task_job_id : task.job_id;
         const response = await send({
-          type: "task.action", action, jobId: task.job_id, presetId
+          type: "task.action", action: runtimeAction, jobId: runtimeJobId, presetId
         });
         if (!response?.ok) throw new Error(response?.error || "操作失败");
         panel.feedback(response.data?.message || (action === "download"
