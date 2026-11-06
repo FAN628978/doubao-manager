@@ -654,6 +654,24 @@ def test_incremental_update_is_not_order_sensitive():
     assert "if(!list.length)return false" in body
 
 
+def test_redownload_replaces_even_a_playing_stale_video():
+    source = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert 'data-video-version="${esc(videoVersion)}"' in source
+    assert '/video?v=${encodeURIComponent(videoVersion)}' in source
+    body = source[source.index("function updateJobsInPlace"):]
+    body = body[:body.index("\n  function openJobActions")]
+    assert "playing?.dataset.videoVersion" in body
+    assert "playingVersion===latestVideoVersion" in body
+    assert "&&!keepPlaying" in body
+
+
+def test_playing_video_does_not_pause_latest_version_polling():
+    source = (STATIC / "app.js").read_text(encoding="utf-8")
+    start = source.index("function autoRefreshPaused")
+    body = source[start:source.index("\n  }", start)]
+    assert "#jobsTable video" not in body
+
+
 def test_archived_videos_lazy_load_near_viewport_only():
     async def run():
         server = Server()
