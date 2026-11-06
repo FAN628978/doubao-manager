@@ -47,7 +47,7 @@ def payload(token: str) -> dict:
         "takeover": {"active": False, "can_takeover": True, "can_resume": False},
         "manual_controls": [
             {
-                "key": "exhaust_quota", "label": "额度清零", "enabled": True,
+                "key": "exhaust_quota", "label": "额度清理", "enabled": True,
                 "reason": "", "confirm": "确认标记？",
             },
             {
@@ -136,7 +136,7 @@ async def verify_context(playwright, executable: Path, profile: str, api_base: s
     assert "账号 B" in second_text and "job-b" in second_text and "账号 A" not in second_text
     for label in [
         "提交素材", "确认发送", "发送确认语", "下载视频", "推送服务器",
-        "额度清零", "换号自动执行", "下一个任务",
+        "额度清理", "换号自动执行", "下一个任务",
     ]:
         assert label in first_text
     if not restarted:

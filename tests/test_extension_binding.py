@@ -195,9 +195,17 @@ def test_extension_actions_call_existing_task_apis():
     assert '`__exhaust_quota__${task.job_id}`' in content
 
 
-def test_extension_can_only_mark_current_account_quota_exhausted(tmp_path, monkeypatch):
+def test_extension_quota_cleanup_keeps_one_second_less_than_current_task(tmp_path, monkeypatch):
     bridge = build_bridge(tmp_path, monkeypatch)
     token = asyncio.run(bridge.state.video_bind_task_page("job_0", BoundPage()))
+    with application.db() as connection:
+        connection.execute(
+            "UPDATE video_web_jobs SET duration=4 WHERE job_id='job_0'"
+        )
+        connection.execute(
+            "INSERT INTO local_settings(key,value) VALUES(?, '1')",
+            (web_api.quota_exhausted_setting_key("account_1"),),
+        )
 
     with TestClient(bridge) as client:
         before = client.get(
@@ -207,7 +215,7 @@ def test_extension_can_only_mark_current_account_quota_exhausted(tmp_path, monke
             item for item in before["manual_controls"]
             if item["key"] == "exhaust_quota"
         )
-        assert control["label"] == "额度清零"
+        assert control["label"] == "额度清理"
         assert control["enabled"] is True
 
         marked = client.post(
@@ -216,9 +224,9 @@ def test_extension_can_only_mark_current_account_quota_exhausted(tmp_path, monke
         assert marked.status_code == 200, marked.text
         body = marked.json()
         assert body["account_id"] == "account_1"
-        assert body["quota"]["manually_exhausted"] is True
-        assert body["quota"]["consumed_seconds"] == 0
-        assert body["quota"]["remaining_seconds"] == 0
+        assert body["quota"]["manually_exhausted"] is False
+        assert body["quota"]["consumed_seconds"] == DAILY_VIDEO_SECONDS - 3
+        assert body["quota"]["remaining_seconds"] == 3
 
         job = client.get("/api/v1/videos/generations/job_0").json()
         assert job["status"] == "awaiting_manual_send"
@@ -231,8 +239,8 @@ def test_extension_can_only_mark_current_account_quota_exhausted(tmp_path, monke
             item for item in after["manual_controls"]
             if item["key"] == "exhaust_quota"
         )
-        assert control["label"] == "额度清零"
-        assert control["enabled"] is False
+        assert control["label"] == "额度清理"
+        assert control["enabled"] is True
 
         with application.db() as connection:
             connection.execute(
@@ -253,6 +261,38 @@ def test_extension_can_only_mark_current_account_quota_exhausted(tmp_path, monke
             "SELECT paused FROM accounts WHERE id='account_1'"
         ).fetchone()
         assert account["paused"] == 0
+
+
+def test_extension_quota_cleanup_accounts_for_current_task_reservation(tmp_path, monkeypatch):
+    bridge = build_bridge(tmp_path, monkeypatch)
+    day = web_api.local_day()
+    with application.db() as connection:
+        connection.execute(
+            "UPDATE video_web_jobs SET duration=4,quota_day=?,quota_state='reserved' "
+            "WHERE job_id='job_0'",
+            (day,),
+        )
+        connection.execute(
+            "INSERT INTO account_quota(account_id,day,reserved_seconds,consumed_seconds) "
+            "VALUES('account_1',?,4,0)",
+            (day,),
+        )
+
+    with TestClient(bridge) as client:
+        cleaned = client.post(
+            "/api/v1/videos/generations/job_0/exhaust-account-quota"
+        )
+        assert cleaned.status_code == 200, cleaned.text
+        assert cleaned.json()["quota"]["remaining_seconds"] == 0
+
+    with application.db() as connection:
+        connection.execute(
+            "UPDATE account_quota SET reserved_seconds=0 "
+            "WHERE account_id='account_1' AND day=?",
+            (day,),
+        )
+        after_release = quota_summary(connection, "account_1", day=day)
+    assert after_release["remaining_seconds"] == 3
 
 
 def test_extension_always_exposes_next_pending_control(tmp_path, monkeypatch):

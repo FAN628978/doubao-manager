@@ -108,6 +108,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     # Every account is a single execution lane. Different accounts may run in
     # parallel, but jobs sharing one account must wait until its owner releases it.
     locks: dict[str, asyncio.Lock] = {}
+    restart_locks: dict[str, asyncio.Lock] = {}
     pending: dict[str, asyncio.Task] = {}
     # 每个任务从开始执行起就绑定自己的网页句柄。人工发送、异常复查和关联下载
     # 都优先复用该任务实际执行的标签页，避免按账号的最后一个页面猜测。
@@ -2148,12 +2149,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         next_task = next_pending_task(item["id"])
         takeover_active = bool(item["web"].get("operator_takeover"))
         account_id = item.get("account_id") or ""
-        account_quota_exhausted = False
-        if account_id:
-            with db() as c:
-                account_quota_exhausted = quota_summary(
-                    c, account_id
-                )["manually_exhausted"]
         manual_controls = []
         if takeover_active:
             manual_controls.append({
@@ -2173,21 +2168,16 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             })
         manual_controls.extend([{
             "key": "exhaust_quota",
-            "label": "额度清零",
-            "enabled": bool(account_id) and not account_quota_exhausted,
-            "reason": (
-                "该账号今日额度已用完，明日自动恢复"
-                if account_quota_exhausted else (
-                    "" if account_id else "当前任务尚未分配账号"
-                )
-            ),
-            "confirm": "仅将当前账号标记为今日额度用完；不会自动换号或重启任务，明日自动恢复。",
+            "label": "额度清理",
+            "enabled": bool(account_id),
+            "reason": "" if account_id else "当前任务尚未分配账号",
+            "confirm": "将当前账号的今日剩余额度调整到比当前任务时长少 1 秒；不会自动换号或重启任务。",
         }, {
             "key": "restart_auto",
             "label": "换号自动执行",
             "enabled": True,
             "reason": "",
-            "confirm": "确认关闭原账号窗口后换号自动执行？系统会遵守原有额度和状态校验。",
+            "confirm": "确认关闭原账号窗口后换号自动执行？运行中的任务会先停止；已归档任务除外。",
         }, {
             "key": "next_task",
             "label": "下一个任务",
@@ -2229,7 +2219,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     @app.post("/api/v1/videos/generations/{jobid}/exhaust-account-quota", tags=["Chrome Extension"])
     async def exhaust_account_quota(jobid: str, x_api_key: Optional[str] = Header(None)):
-        """Mark only the bound account's local quota as exhausted for today."""
+        """Keep the bound account just below the current task's required quota."""
         auth(x_api_key); ensure_schema()
         item = detail(jobid)
         account_id = item.get("account_id") or ""
@@ -2237,18 +2227,51 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             raise HTTPException(409, "当前任务尚未分配账号")
         get_account(account_id)
         day = local_day()
+        duration = int(item["web"].get("duration") or 0)
+        if duration <= 0:
+            raise HTTPException(409, "当前任务时长无效，无法清理额度")
+        target_remaining = max(0, duration - 1)
         with db() as c:
             c.execute(
-                "INSERT INTO local_settings(key,value) VALUES(?, '1') "
-                "ON CONFLICT(key) DO UPDATE SET value='1'",
+                "DELETE FROM local_settings WHERE key=?",
                 (quota_exhausted_setting_key(account_id, day),),
+            )
+            web_quota = c.execute(
+                "SELECT quota_day,quota_state FROM video_web_jobs WHERE job_id=?",
+                (jobid,),
+            ).fetchone()
+            quota_row = c.execute(
+                "SELECT reserved_seconds,consumed_seconds FROM account_quota "
+                "WHERE account_id=? AND day=?",
+                (account_id, day),
+            ).fetchone()
+            reserved = int(quota_row["reserved_seconds"] or 0) if quota_row else 0
+            consumed = int(quota_row["consumed_seconds"] or 0) if quota_row else 0
+            quota_state = (web_quota["quota_state"] or "") if web_quota else ""
+            quota_day = (web_quota["quota_day"] or "") if web_quota else ""
+            current_hold = (
+                min(duration, reserved)
+                if quota_day == day and quota_state in ("", "reserved", "unknown")
+                else 0
+            )
+            reserved_after_current_task = max(0, reserved - current_hold)
+            adjusted_consumed = max(
+                consumed,
+                DAILY_VIDEO_SECONDS - reserved_after_current_task - target_remaining,
+            )
+            c.execute(
+                "INSERT INTO account_quota(account_id,day,reserved_seconds,consumed_seconds) "
+                "VALUES(?,?,0,?) ON CONFLICT(account_id,day) DO UPDATE SET "
+                "consumed_seconds=excluded.consumed_seconds",
+                (account_id, day, adjusted_consumed),
             )
             c.execute(
                 "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
                 (
                     jobid,
                     item["status"],
-                    f"已标记账号 {account_label(account_id)} 今日额度用完；明日自动恢复，任务未自动换号",
+                    f"已清理账号 {account_label(account_id)} 今日额度："
+                    f"换号释放当前任务占用后，剩余额度不高于 {target_remaining} 秒",
                     ts(),
                 ),
             )
@@ -2258,7 +2281,10 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "account_id": account_id,
             "day": day,
             "quota": quota,
-            "message": "已标记当前账号今日额度用完；请按需人工换号，明日自动恢复",
+            "message": (
+                f"额度已清理：换号后当前账号剩余额度不高于 {target_remaining} 秒，"
+                f"比本任务 {duration} 秒少 1 秒"
+            ),
         }
 
     @app.post("/api/v1/videos/generations/{jobid}/start",tags=["Doubao Web Video"])
@@ -2317,12 +2343,15 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "message": f"已取出下一个任务并进入调度：{task_name}",
         }
 
-    async def reset_generation(jobid: str, *, rematch_account: bool = False):
+    async def reset_generation(
+        jobid: str, *, rematch_account: bool = False, allow_unfinished: bool = False
+    ):
         """Reset an existing generation to queued without opening or submitting a page."""
         item = detail(jobid)
         if item["status"] == "downloaded":
             raise HTTPException(409,"任务已归档，无需重新开始")
-        if item["status"] not in ("queued", MANUAL_WAIT, "confirming", "generating", "needs_review", "failed"):
+        resettable = ("queued", MANUAL_WAIT, "confirming", "generating", "needs_review", "failed")
+        if item["status"] not in resettable and not allow_unfinished:
             raise HTTPException(409,"任务正在执行；请等待当前浏览器操作结束后再重新开始")
         task = pending.get(jobid)
         if task is not None and not task.done():
@@ -2506,24 +2535,32 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     async def restart_auto(jobid: str, x_api_key: Optional[str] = Header(None)):
         """Close the old account window, then restart with a fresh available account."""
         auth(x_api_key); ensure_schema()
-        item = detail(jobid)
-        previous_account_id = item.get("account_id") or ""
-        if item["status"] == "downloaded":
-            raise HTTPException(409, "任务已归档，无需重新开始")
-        if item["status"] not in (
-            "queued", MANUAL_WAIT, "confirming", "generating", "needs_review", "failed"
-        ):
-            raise HTTPException(409, "任务正在执行；请等待当前浏览器操作结束后再重新开始")
-        task = pending.get(jobid)
-        if task is not None and not task.done():
-            raise HTTPException(409, "该任务正在执行，请稍后再重新开始")
-        await close_previous_browser_before_restart(jobid, previous_account_id)
-        if item["status"] == "queued":
-            release_job_quota_hold(jobid)
-        req = await reset_generation(jobid, rematch_account=True)
-        req.submit_mode = "auto"
-        start_worker(jobid, req, previous_account_id or avoid_account_for(jobid))
-        return detail(jobid)
+        async with restart_locks.setdefault(jobid, asyncio.Lock()):
+            item = detail(jobid)
+            previous_account_id = item.get("account_id") or ""
+            if item["status"] == "downloaded":
+                raise HTTPException(409, "任务已归档，无需重新开始")
+
+            cancel_recovery = getattr(recovery_service, "cancel_job", None)
+            if cancel_recovery is not None:
+                await cancel_recovery(jobid)
+            task = pending.get(jobid)
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                if pending.get(jobid) is task:
+                    pending.pop(jobid, None)
+
+            item = detail(jobid)
+            await close_previous_browser_before_restart(jobid, previous_account_id)
+            if item["status"] == "queued":
+                release_job_quota_hold(jobid)
+            req = await reset_generation(
+                jobid, rematch_account=True, allow_unfinished=True
+            )
+            req.submit_mode = "auto"
+            start_worker(jobid, req, previous_account_id or avoid_account_for(jobid))
+            return detail(jobid)
 
     @app.post("/api/v1/videos/generations/{jobid}/reset",tags=["Doubao Web Video"])
     async def reset(jobid:str,confirm_reset:bool=False,x_api_key:Optional[str]=Header(None)):

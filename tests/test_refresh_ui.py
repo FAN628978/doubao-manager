@@ -614,6 +614,16 @@ def test_bulk_push_only_applies_to_unpushed_jobs():
     assert "Boolean(job.can_push_result)&&!job.result_pushed_at" in applies
 
 
+def test_restart_auto_is_available_for_every_unfinished_web_job():
+    source = (STATIC / "app.js").read_text(encoding="utf-8")
+    applies = source[source.index("function bulkApplies"):]
+    applies = applies[:applies.index("\n  function bulkActionJobs")]
+    assert "if(action==='auto')return web&&job.status!=='downloaded'" in applies
+    auto_run = source[source.index("async function autoRunJob"):]
+    auto_run = auto_run[:auto_run.index("\n  async function resendJob")]
+    assert "recoveryActive" not in auto_run
+
+
 def test_task_open_close_actions_target_bound_page_not_account_window():
     source = (STATIC / "app.js").read_text(encoding="utf-8")
     actions = source[source.index("function fixedJobActions"):]

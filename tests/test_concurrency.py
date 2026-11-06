@@ -107,6 +107,106 @@ def test_cancel_running_job_stops_worker_and_releases_slots(tmp_path, monkeypatc
     asyncio.run(run())
 
 
+def test_restart_auto_can_replace_a_running_worker(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
+    dbfile = tmp_path / "restart-running.sqlite"
+
+    def db():
+        conn = sqlite3.connect(dbfile)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    with db() as conn:
+        conn.executescript("""
+            CREATE TABLE accounts(
+                id TEXT PRIMARY KEY,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE jobs(
+                id TEXT PRIMARY KEY,
+                project_id TEXT,
+                episode_id TEXT,
+                shot_id TEXT,
+                prompt TEXT,
+                account_id TEXT,
+                status TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                error_message TEXT DEFAULT '',
+                video_path TEXT
+            );
+            INSERT INTO accounts(id, archived, created_at)
+            VALUES('account_1', 0, '2026-01-01T00:00:00+00:00');
+        """)
+
+    def get_account(account_id):
+        with db() as conn:
+            return conn.execute(
+                "SELECT * FROM accounts WHERE id=?", (account_id,)
+            ).fetchone()
+
+    def get_job(job_id):
+        with db() as conn:
+            return conn.execute(
+                "SELECT * FROM jobs WHERE id=?", (job_id,)
+            ).fetchone()
+
+    async def run():
+        app = FastAPI()
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        attempts = 0
+
+        async def fake_browser(_account_id):
+            return object()
+
+        async def fake_perform(*_args, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            (first_started if attempts == 1 else second_started).set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(web_api, "perform", fake_perform)
+        web_api.mount_video_api(
+            app,
+            db=db,
+            get_account=get_account,
+            get_job=get_job,
+            browser=fake_browser,
+            base_dir=tmp_path,
+            downloads_dir=tmp_path / "videos",
+            serialize=dict,
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://local"
+        ) as client:
+            created = await client.post("/api/v1/videos/generations", json={
+                "account_id": "account_1",
+                "prompt": "运行中换号重启",
+                "duration": 4,
+                "auto_start": True,
+            })
+            assert created.status_code == 202, created.text
+            jobid = created.json()["id"]
+            await asyncio.wait_for(first_started.wait(), timeout=1)
+
+            restarted = await client.post(
+                f"/api/v1/videos/generations/{jobid}/restart-auto"
+            )
+            assert restarted.status_code == 200, restarted.text
+            await asyncio.wait_for(second_started.wait(), timeout=1)
+            assert attempts == 2
+
+            canceled = await client.post(
+                f"/api/v1/videos/generations/{jobid}/cancel?confirm_cancel=true"
+            )
+            assert canceled.status_code == 200, canceled.text
+
+    asyncio.run(run())
+
+
 def test_second_account_starts_in_parallel_without_global_browser_lane(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
     monkeypatch.setenv("DOUBAO_MAX_CONCURRENT_ACCOUNTS", "0")
