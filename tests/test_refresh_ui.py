@@ -88,6 +88,9 @@ class Server:
         self.auto_dispatch_updates = []
         self.auto_dispatch_interval_seconds = 5
         self.auto_dispatch_interval_updates = []
+        self.scheduled_dispatch_enabled = False
+        self.scheduled_dispatch_time = "02:00"
+        self.scheduled_dispatch_updates = []
         self.accepting_tasks = True
         self.task_acceptance_updates = []
         self.submit_mode = "auto"
@@ -190,6 +193,29 @@ class Server:
                 body=_json({
                     "auto_dispatch_interval_seconds":
                         self.auto_dispatch_interval_seconds,
+                }),
+            )
+        elif url.endswith("/api/settings/scheduled-dispatch"):
+            if route.request.method == "PUT":
+                body = json.loads(route.request.post_data or "{}")
+                self.scheduled_dispatch_enabled = bool(
+                    body.get("scheduled_dispatch_enabled")
+                )
+                self.scheduled_dispatch_time = (
+                    body.get("scheduled_dispatch_time") or "02:00"
+                )
+                self.scheduled_dispatch_updates.append((
+                    self.scheduled_dispatch_enabled,
+                    self.scheduled_dispatch_time,
+                ))
+            await route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=_json({
+                    "scheduled_dispatch_enabled":
+                        self.scheduled_dispatch_enabled,
+                    "scheduled_dispatch_time": self.scheduled_dispatch_time,
+                    "scheduled_dispatch_last_date": "",
                 }),
             )
         elif url.endswith("/api/settings/task-acceptance"):
@@ -1182,6 +1208,18 @@ def test_automation_switches_are_saved_independently():
                 assert await page.input_value(
                     "#autoDispatchIntervalSetting"
                 ) == "5"
+                assert not await page.is_checked(
+                    "#scheduledDispatchSettingToggle"
+                )
+                assert await page.input_value(
+                    "#scheduledDispatchTimeSetting"
+                ) == "02:00"
+                assert await page.is_enabled(
+                    "#scheduledDispatchTimeSetting"
+                )
+                assert await page.inner_text(
+                    "#scheduledDispatchCountdown"
+                ) == "定时已关闭 · 可先设置执行时间"
                 assert await page.inner_text("#dispatchFlowState") == "自动进入调度"
                 assert await page.inner_text("#executionFlowState") == "自动执行完整流程"
                 assert await page.input_value("#memberModelSetting") == "Seedance 2.0"
@@ -1189,6 +1227,30 @@ def test_automation_switches_are_saved_independently():
 
                 await page.click("#autoDispatchSettingToggle")
                 await page.fill("#autoDispatchIntervalSetting", "12")
+                await page.click("#scheduledDispatchSettingToggle")
+                await page.fill("#scheduledDispatchTimeSetting", "03:15")
+                countdown = await page.evaluate("""
+                    () => {
+                        updateScheduledDispatchCountdown(
+                            new Date(2026, 10, 6, 2, 14, 59)
+                        );
+                        return document.querySelector(
+                            '#scheduledDispatchCountdown'
+                        ).textContent;
+                    }
+                """)
+                assert countdown == "距离下次执行还有 01:00:01"
+                next_day_countdown = await page.evaluate("""
+                    () => {
+                        updateScheduledDispatchCountdown(
+                            new Date(2026, 10, 6, 4, 0, 0)
+                        );
+                        return document.querySelector(
+                            '#scheduledDispatchCountdown'
+                        ).textContent;
+                    }
+                """)
+                assert next_day_countdown == "距离下次执行还有 23:15:00"
                 await page.select_option("#memberModelSetting", "Seedance 2.0 Fast")
                 await page.select_option("#nonMemberModelSetting", "Seedance 2.5")
                 assert not await page.is_checked("#autoDispatchSettingToggle")
@@ -1201,6 +1263,7 @@ def test_automation_switches_are_saved_independently():
 
                 assert server.auto_dispatch_updates == [False]
                 assert server.auto_dispatch_interval_updates == [12]
+                assert server.scheduled_dispatch_updates == [(True, "03:15")]
                 assert server.submit_mode_updates == ["auto"]
                 assert server.video_model_updates == [
                     ("Seedance 2.0 Fast", "Seedance 2.5")
@@ -1211,6 +1274,12 @@ def test_automation_switches_are_saved_independently():
                 assert await page.evaluate(
                     "() => state.autoDispatchIntervalSeconds"
                 ) == 12
+                assert await page.evaluate(
+                    "() => state.scheduledDispatchEnabled"
+                ) is True
+                assert await page.evaluate(
+                    "() => state.scheduledDispatchTime"
+                ) == "03:15"
                 assert await page.evaluate("() => state.submitMode") == "auto"
             finally:
                 await browser.close()

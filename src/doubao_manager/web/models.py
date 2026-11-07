@@ -71,6 +71,13 @@ class AutoDispatchIntervalSetting(BaseModel):
     auto_dispatch_interval_seconds: int = Field(ge=1, le=3600)
 
 
+class ScheduledDispatchSetting(BaseModel):
+    scheduled_dispatch_enabled: bool
+    scheduled_dispatch_time: str = Field(
+        pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$"
+    )
+
+
 class TaskAcceptanceSetting(BaseModel):
     accepting_tasks: bool
 

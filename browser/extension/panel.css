@@ -1,6 +1,6 @@
 :host { all: initial; }
-.db-task-panel { position: fixed; z-index: 2147483647; right: 18px; top: 84px; width: 320px; color: #e9edf5; font: 13px/1.45 Inter, "Microsoft YaHei", sans-serif; }
-.db-panel-card { display: flex; flex-direction: column; max-height: calc(100vh - 104px); overflow: hidden; border: 1px solid rgba(148,163,184,.2); border-radius: 14px; background: rgba(16,21,31,.96); box-shadow: 0 20px 55px rgba(0,0,0,.42); backdrop-filter: blur(18px); }
+.db-task-panel { --db-panel-top: clamp(60px, 7vh, 84px); --db-panel-bottom-space: clamp(120px, 18vh, 180px); position: fixed; z-index: 2147483647; right: clamp(8px, 1.25vw, 18px); top: var(--db-panel-top); width: min(clamp(260px, 22vw, 320px), calc(100vw - 16px)); color: #e9edf5; font: 13px/1.45 Inter, "Microsoft YaHei", sans-serif; }
+.db-panel-card { box-sizing: border-box; display: flex; flex-direction: column; max-height: calc(100vh - var(--db-panel-top) - var(--db-panel-bottom-space)); max-height: calc(100dvh - var(--db-panel-top) - var(--db-panel-bottom-space)); overflow: hidden; border: 1px solid rgba(148,163,184,.2); border-radius: 14px; background: rgba(16,21,31,.96); box-shadow: 0 20px 55px rgba(0,0,0,.42); backdrop-filter: blur(18px); }
 header { display: flex; align-items: center; justify-content: space-between; padding: 13px 14px; border-bottom: 1px solid rgba(148,163,184,.14); }
 header div { display: grid; gap: 1px; } header b { font-size: 14px; } header span { color: #94a3b8; font-size: 11px; }
 nav { display: flex; gap: 5px; } button { position: relative; border: 0; color: #cbd5e1; background: rgba(148,163,184,.1); cursor: pointer; transition: transform .14s ease, border-color .16s ease, background-color .16s ease, box-shadow .16s ease, color .16s ease, opacity .16s ease; }

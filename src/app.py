@@ -187,7 +187,11 @@ async def lifespan(app: FastAPI):
     # Always-on maintenance: re-admit auto jobs that lost their worker, and cut
     # off workers that stopped progressing so their locks cannot freeze the queue.
     maintenance_tasks = []
-    for hook in ("video_queue_tick", "video_stall_watchdog"):
+    for hook in (
+        "video_queue_tick",
+        "video_scheduled_dispatch",
+        "video_stall_watchdog",
+    ):
         factory = getattr(app.state, hook, None)
         if factory is not None:
             maintenance_tasks.append(asyncio.create_task(factory()))

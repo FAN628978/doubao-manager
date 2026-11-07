@@ -5,6 +5,7 @@
 import asyncio
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -237,6 +238,95 @@ def test_auto_dispatch_interval_defaults_and_persists(bridge):
         "/api/settings/auto-dispatch-interval",
         json={"auto_dispatch_interval_seconds": 0},
     ).status_code == 422
+
+
+def test_scheduled_dispatch_setting_defaults_and_persists(bridge):
+    client = bridge["client"]
+    assert client.get("/api/settings/scheduled-dispatch").json() == {
+        "scheduled_dispatch_enabled": False,
+        "scheduled_dispatch_time": "02:00",
+        "scheduled_dispatch_last_date": "",
+    }
+
+    updated = client.put(
+        "/api/settings/scheduled-dispatch",
+        json={
+            "scheduled_dispatch_enabled": True,
+            "scheduled_dispatch_time": "03:15",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["scheduled_dispatch_enabled"] is True
+    assert updated.json()["scheduled_dispatch_time"] == "03:15"
+    assert client.put(
+        "/api/settings/scheduled-dispatch",
+        json={
+            "scheduled_dispatch_enabled": True,
+            "scheduled_dispatch_time": "25:00",
+        },
+    ).status_code == 422
+
+
+def test_scheduled_dispatch_releases_pending_jobs_once_per_local_day(bridge):
+    with bridge["session"]() as client:
+        _set_mode(client, "auto")
+        _set_auto_dispatch(client, False)
+        first = client.post("/api/v1/videos/generations", json={
+            "prompt": "凌晨批量任务一", "duration": 4,
+        }).json()
+        second = client.post("/api/v1/videos/generations", json={
+            "prompt": "凌晨批量任务二", "duration": 4,
+        }).json()
+        setting = client.put(
+            "/api/settings/scheduled-dispatch",
+            json={
+                "scheduled_dispatch_enabled": True,
+                "scheduled_dispatch_time": "02:00",
+            },
+        ).json()
+
+        async def run_at(value):
+            return client.app.state.video_run_scheduled_dispatch(value)
+
+        zone = timezone(timedelta(hours=8))
+        previous_date = setting["scheduled_dispatch_last_date"] or "2026-11-06"
+        run_date = datetime.strptime(previous_date, "%Y-%m-%d").date() + timedelta(days=1)
+        assert client.portal.call(
+            run_at, datetime.combine(run_date, datetime.min.time(), zone).replace(
+                hour=1, minute=59
+            )
+        ) == 0
+        assert client.portal.call(
+            run_at, datetime.combine(run_date, datetime.min.time(), zone).replace(
+                hour=2
+            )
+        ) == 2
+        for job_id in (first["id"], second["id"]):
+            state = client.get(
+                f"/api/v1/videos/generations/{job_id}"
+            ).json()
+            assert state["web"]["dispatched_at"]
+
+        late = client.post("/api/v1/videos/generations", json={
+            "prompt": "当天触发后新来的任务", "duration": 4,
+        }).json()
+        assert client.portal.call(
+            run_at, datetime.combine(run_date, datetime.min.time(), zone).replace(
+                hour=23
+            )
+        ) == 0
+        assert not client.get(
+            f"/api/v1/videos/generations/{late['id']}"
+        ).json()["web"]["dispatched_at"]
+        assert client.portal.call(
+            run_at,
+            datetime.combine(
+                run_date + timedelta(days=1), datetime.min.time(), zone
+            ).replace(hour=2, minute=1),
+        ) == 1
+        assert client.get(
+            f"/api/v1/videos/generations/{late['id']}"
+        ).json()["web"]["dispatched_at"]
 
 
 def test_auto_switch_on_exception_setting_defaults_off_and_persists(bridge):

@@ -55,6 +55,7 @@ from .models import (
     ProcessingLimitSetting,
     QueueAccountRequest,
     ReviewNeeded,
+    ScheduledDispatchSetting,
     SubmitModeSetting,
     TaskAcceptanceSetting,
     VideoModelSetting,
@@ -565,6 +566,29 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         except (TypeError, ValueError):
             return fallback
 
+    def local_scheduled_dispatch_setting() -> dict:
+        with db() as c:
+            rows = {
+                row["key"]: str(row["value"]).strip()
+                for row in c.execute(
+                    "SELECT key,value FROM local_settings WHERE key IN "
+                    "('scheduled_dispatch_enabled','scheduled_dispatch_time',"
+                    "'scheduled_dispatch_last_date')"
+                ).fetchall()
+            }
+        scheduled_time = rows.get("scheduled_dispatch_time", "02:00")
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", scheduled_time):
+            scheduled_time = "02:00"
+        return {
+            "scheduled_dispatch_enabled": rows.get(
+                "scheduled_dispatch_enabled", "0"
+            ).lower() in ("1", "true", "yes", "on"),
+            "scheduled_dispatch_time": scheduled_time,
+            "scheduled_dispatch_last_date": rows.get(
+                "scheduled_dispatch_last_date", ""
+            ),
+        }
+
     def local_accepting_tasks() -> bool:
         with db() as c:
             row = c.execute(
@@ -683,6 +707,44 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         return {
             "auto_dispatch_interval_seconds": payload.auto_dispatch_interval_seconds
         }
+
+    @app.get("/api/settings/scheduled-dispatch", tags=["Local Settings"])
+    async def get_scheduled_dispatch_setting():
+        ensure_schema()
+        return local_scheduled_dispatch_setting()
+
+    @app.put("/api/settings/scheduled-dispatch", tags=["Local Settings"])
+    async def update_scheduled_dispatch_setting(
+        payload: ScheduledDispatchSetting,
+    ):
+        ensure_schema()
+        previous = local_scheduled_dispatch_setting()
+        last_date = previous["scheduled_dispatch_last_date"]
+        changed = (
+            not previous["scheduled_dispatch_enabled"]
+            or previous["scheduled_dispatch_time"] != payload.scheduled_dispatch_time
+        )
+        if payload.scheduled_dispatch_enabled and changed:
+            local_now = datetime.now().astimezone()
+            last_date = (
+                local_now.strftime("%Y-%m-%d")
+                if local_now.strftime("%H:%M") >= payload.scheduled_dispatch_time
+                else ""
+            )
+        with db() as c:
+            c.executemany(
+                "INSERT INTO local_settings(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (
+                    (
+                        "scheduled_dispatch_enabled",
+                        "1" if payload.scheduled_dispatch_enabled else "0",
+                    ),
+                    ("scheduled_dispatch_time", payload.scheduled_dispatch_time),
+                    ("scheduled_dispatch_last_date", last_date),
+                ),
+            )
+        return local_scheduled_dispatch_setting()
 
     @app.get("/api/settings/task-acceptance", tags=["Local Settings"])
     async def get_task_acceptance_setting():
@@ -4496,6 +4558,67 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 logger.exception("Could not redispatch queued job %s", jobid)
         return started
 
+    def run_scheduled_dispatch(now: Optional[datetime] = None) -> int:
+        """Release all untouched queued jobs once after the configured local time."""
+        setting = local_scheduled_dispatch_setting()
+        if not setting["scheduled_dispatch_enabled"]:
+            return 0
+        local_now = now or datetime.now().astimezone()
+        if local_now.tzinfo is None:
+            local_now = local_now.astimezone()
+        today = local_now.strftime("%Y-%m-%d")
+        if (
+            local_now.strftime("%H:%M") < setting["scheduled_dispatch_time"]
+            or setting["scheduled_dispatch_last_date"] == today
+        ):
+            return 0
+        with db() as c:
+            rows = c.execute(
+                "SELECT j.id FROM jobs j JOIN video_web_jobs w ON j.id=w.job_id "
+                "WHERE j.status='queued' AND COALESCE(w.dispatched_at,'')='' "
+                "ORDER BY j.created_at ASC, j.id ASC"
+            ).fetchall()
+        released = 0
+        for row in rows:
+            jobid = row["id"]
+            try:
+                req = assemble_req(jobid)
+                resolve_assets(req)
+                if req.account_id and get_account(req.account_id)["archived"]:
+                    raise HTTPException(409, "账号已归档")
+                start_worker(jobid, req, avoid_account_for(jobid))
+                released += 1
+            except HTTPException as exc:
+                logger.warning(
+                    "Scheduled dispatch skipped job %s: %s", jobid, exc.detail
+                )
+            except Exception:
+                logger.exception("Scheduled dispatch failed for job %s", jobid)
+        with db() as c:
+            c.execute(
+                "INSERT INTO local_settings(key,value) "
+                "VALUES('scheduled_dispatch_last_date',?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (today,),
+            )
+        logger.info(
+            "Scheduled dispatch released %s of %s queued jobs for %s",
+            released,
+            len(rows),
+            today,
+        )
+        return released
+
+    async def scheduled_dispatch_loop() -> None:
+        while True:
+            try:
+                run_scheduled_dispatch()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Daily scheduled dispatch failed")
+            await asyncio.sleep(30)
+
     async def queue_tick_loop() -> None:
         while True:
             await asyncio.sleep(local_auto_dispatch_interval_seconds())
@@ -4586,6 +4709,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 logger.exception("Stall watchdog failed")
 
     app.state.video_queue_tick = queue_tick_loop
+    app.state.video_scheduled_dispatch = scheduled_dispatch_loop
+    app.state.video_run_scheduled_dispatch = run_scheduled_dispatch
     app.state.video_stall_watchdog = stall_watchdog_loop
     app.state.video_redispatch = redispatch_queued_jobs
     app.state.video_stall_watchdog_once = stall_watchdog_once
