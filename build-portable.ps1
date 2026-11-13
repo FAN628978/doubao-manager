@@ -48,9 +48,17 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectDir "browser") `
         -Destination $packageDir -Recurse -Force
 
-    # The release ZIP contains an empty data directory. Existing private account data
+    # The release ZIP contains task settings only. Existing private account data
     # is restored only to the local portable folder after compression.
     New-Item -ItemType Directory -Path $packageDataDir -Force | Out-Null
+    $sourceDb = Join-Path $projectDir "data\manager.sqlite3"
+    if (Test-Path -LiteralPath $sourceDb) {
+        & $pythonExe (Join-Path $projectDir "scripts\export_portable_settings.py") `
+            $sourceDb (Join-Path $packageDataDir "manager.sqlite3")
+        if ($LASTEXITCODE -ne 0) {
+            throw "Exporting task settings failed with exit code $LASTEXITCODE."
+        }
+    }
     Set-Content -LiteralPath (Join-Path $packageDir "README.txt") -Encoding UTF8 -Value @"
 Doubao Account Desk Portable
 
@@ -58,8 +66,9 @@ Doubao Account Desk Portable
 2. Double-click $packageName.exe. The manager will open in your default browser.
 3. Keep the command window open. Close it or press Ctrl+C to stop the program.
 4. Account sessions, the database, and downloaded videos are stored in the data folder.
-5. To upgrade, extract the new ZIP to a new folder, close the old program, then copy the entire old data folder into the new extracted folder and replace its empty data folder.
+5. To upgrade, extract the new ZIP to a new folder, close the old program, then copy the entire old data folder into the new extracted folder and replace its data folder. This also keeps your old task settings.
 6. This package supports 64-bit Windows 10/11 and includes its managed Chrome runtime.
+7. Fresh installations use the task settings and confirmation presets from the project at build time.
 
 The data folder contains private account data. Do not share a used data folder.
 All persisted file paths are relative to this executable and confined to its data folder.

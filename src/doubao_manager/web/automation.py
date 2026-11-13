@@ -269,7 +269,14 @@ async def enter_video_mode(page):
     """
     launch = await first_visible(page, ['[data-testid="skill_bar_button_17"]'])
     if launch is not None:
-        await launch.click()
+        try:
+            await launch.click(timeout=8000)
+        except Exception:
+            # The chip can render visible yet stay non-actionable (list animation
+            # or an overlay swallowing the hit test); a raw 30s actionability wait
+            # then fails the whole attempt. JS-dispatch the click instead and let
+            # the parameters-panel proof below decide.
+            await launch.dispatch_event("click")
     else:
         more = await first_visible(page, ['[data-testid="skill_bar_button_more"]'])
         if more is not None:
