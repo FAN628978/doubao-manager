@@ -83,8 +83,8 @@ class TaskAcceptanceSetting(BaseModel):
 
 
 class VideoModelSetting(BaseModel):
-    member_model: Literal["Seedance 2.5", "Seedance 2.0", "Seedance 2.0 Fast", "Seedance 2.0 Mini"]
-    non_member_model: Literal["Seedance 2.5", "Seedance 2.0", "Seedance 2.0 Fast", "Seedance 2.0 Mini"]
+    member_model: Literal["Seedance 2.0 Fast"]
+    non_member_model: Literal["Seedance 2.0 Fast"]
 
 
 class ProcessingLimitSetting(BaseModel):
@@ -93,10 +93,6 @@ class ProcessingLimitSetting(BaseModel):
 
 class IgnoreQuotaSetting(BaseModel):
     ignore_quota_check: bool
-
-
-class ClaudeRecoverySetting(BaseModel):
-    claude_recovery_enabled: bool
 
 
 class AutoSwitchOnExceptionSetting(BaseModel):

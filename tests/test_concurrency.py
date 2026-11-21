@@ -12,11 +12,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import web_api
 
 
-@pytest.fixture(autouse=True)
-def _disable_claude_recovery(monkeypatch):
-    monkeypatch.setenv("DOUBAO_AGENT_ENABLED", "0")
-
-
 def test_cancel_running_job_stops_worker_and_releases_slots(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
     dbfile = tmp_path / "cancel-running.sqlite"

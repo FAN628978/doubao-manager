@@ -12,7 +12,6 @@ SETTING_KEYS = (
     "auto_dispatch_enabled",
     "auto_dispatch_interval_seconds",
     "auto_switch_on_exception",
-    "claude_recovery_enabled",
     "default_confirmation_preset_id",
     "ignore_quota_check",
     "member_video_model",

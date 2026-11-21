@@ -389,7 +389,7 @@ def test_member_account_priority_and_forced_model(tmp_path, monkeypatch):
                 break
             time.sleep(0.01)
         assert body['account_id'] == member['id']
-        assert body['web']['model'] == 'Seedance 2.0'
+        assert body['web']['model'] == 'Seedance 2.0 Fast'
 
         updated = client.patch(f"/api/accounts/{normal['id']}", json={
             'is_member': True, 'priority': 30,
@@ -404,12 +404,31 @@ def test_member_and_non_member_models_follow_local_settings(tmp_path, monkeypatc
     with TestClient(application.app) as client:
         defaults = client.get('/api/settings/video-models')
         assert defaults.status_code == 200
-        assert defaults.json()['member_model'] == 'Seedance 2.0'
-        assert defaults.json()['non_member_model'] == 'Seedance 2.0 Mini'
+        assert defaults.json()['member_model'] == 'Seedance 2.0 Fast'
+        assert defaults.json()['non_member_model'] == 'Seedance 2.0 Fast'
+        assert defaults.json()['available_models'] == ['Seedance 2.0 Fast']
+
+        with application.db() as conn:
+            conn.executemany(
+                'INSERT OR REPLACE INTO local_settings(key,value) VALUES(?,?)',
+                [('member_video_model', 'Seedance 2.0'),
+                 ('non_member_video_model', 'Seedance 2.0 Mini')],
+            )
+        legacy = client.get('/api/settings/video-models').json()
+        assert legacy['member_model'] == 'Seedance 2.0 Fast'
+        assert legacy['non_member_model'] == 'Seedance 2.0 Fast'
+
+        for field in ('member_model', 'non_member_model'):
+            for removed in ('Seedance 2.5', 'Seedance 2.0', 'Seedance 2.0 Mini'):
+                payload = dict.fromkeys(
+                    ('member_model', 'non_member_model'), 'Seedance 2.0 Fast'
+                )
+                payload[field] = removed
+                assert client.put('/api/settings/video-models', json=payload).status_code == 422
 
         saved = client.put('/api/settings/video-models', json={
             'member_model': 'Seedance 2.0 Fast',
-            'non_member_model': 'Seedance 2.5',
+            'non_member_model': 'Seedance 2.0 Fast',
         })
         assert saved.status_code == 200, saved.text
 
@@ -430,7 +449,7 @@ def test_member_and_non_member_models_follow_local_settings(tmp_path, monkeypatc
         assert member_job.status_code == 202, member_job.text
         assert normal_job.status_code == 202, normal_job.text
         assert member_job.json()['web']['model'] == 'Seedance 2.0 Fast'
-        assert normal_job.json()['web']['model'] == 'Seedance 2.5'
+        assert normal_job.json()['web']['model'] == 'Seedance 2.0 Fast'
 
         invalid = client.put('/api/settings/video-models', json={
             'member_model': 'unknown',

@@ -6,6 +6,28 @@ import random
 import re
 from datetime import datetime, timezone
 
+
+def error_code_from_exception(exc: BaseException) -> str:
+    """Classify manual action failures for the existing human-review flow."""
+    code = getattr(exc, "code", "")
+    if code:
+        return str(code)[:120]
+    message = str(getattr(exc, "detail", "") or exc)
+    for pattern, error_code in (
+        (r"登录", "LOGIN_REQUIRED"),
+        (r"人机验证|安全验证|验证码|captcha", "VERIFICATION_REQUIRED"),
+        (r"额度不足|次数已用完|已达上限|请开通会员", "ACCOUNT_LIMIT"),
+        (r"无法确认是否发送成功|无法证明.*发出|提交状态", "SUBMISSION_UNCONFIRMED"),
+        (r"确认语没有发出去|确认生成的消息没有发出去", "CONFIRM_NOT_SENT"),
+        (r"net::ERR_[A-Z0-9_]+|page\.goto|页面加载|打开.*页面|navigation", "PAGE_LOAD_FAILED"),
+        (r"new_page|launch.*browser|browser.*(?:start|launch)|启动浏览器|浏览器.*(?:启动|连接|不可用)", "BROWSER_START_FAILED"),
+        (r"Target page|context or browser|browser has been closed|\bpage\.|\bbrowser\b|页面已关闭|浏览器.*(?:关闭|崩溃|断开)", "WEB_AUTOMATION_ERROR"),
+    ):
+        if re.search(pattern, message, re.I):
+            return error_code
+    return type(exc).__name__.upper()
+
+
 def ts(): return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 

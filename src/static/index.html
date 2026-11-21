@@ -126,8 +126,8 @@
     <section class="settings-section">
       <div class="settings-section-head"><div><span class="settings-index">02</span><strong>模型策略</strong></div><p>最终模型只读取本机设置，忽略任务请求参数</p></div>
       <div class="task-setting-grid">
-        <div class="setting-card"><div class="setting-card-title"><label for="memberModelSetting">会员账号模型</label><span class="model-account-badge member">会员</span></div><select class="setting-select" id="memberModelSetting"><option>Seedance 2.5</option><option>Seedance 2.0</option><option>Seedance 2.0 Fast</option><option>Seedance 2.0 Mini</option></select><small>任务分配到会员账号后，固定使用此模型。</small></div>
-        <div class="setting-card"><div class="setting-card-title"><label for="nonMemberModelSetting">非会员账号模型</label><span class="model-account-badge">非会员</span></div><select class="setting-select" id="nonMemberModelSetting"><option>Seedance 2.5</option><option>Seedance 2.0</option><option>Seedance 2.0 Fast</option><option>Seedance 2.0 Mini</option></select><small>普通账号统一使用此模型，不采用调用方传入值。</small></div>
+        <div class="setting-card"><div class="setting-card-title"><label for="memberModelSetting">会员账号模型</label><span class="model-account-badge member">会员</span></div><select class="setting-select" id="memberModelSetting"><option>Seedance 2.0 Fast</option></select><small>任务分配到会员账号后，固定使用此模型。</small></div>
+        <div class="setting-card"><div class="setting-card-title"><label for="nonMemberModelSetting">非会员账号模型</label><span class="model-account-badge">非会员</span></div><select class="setting-select" id="nonMemberModelSetting"><option>Seedance 2.0 Fast</option></select><small>普通账号统一使用此模型，不采用调用方传入值。</small></div>
       </div>
     </section>
 
@@ -143,7 +143,6 @@
       <div class="settings-section-head"><div><span class="settings-index">04</span><strong>异常处理</strong></div><p>设置自动化异常发生后的恢复策略</p></div>
       <div class="task-setting-grid">
         <div class="setting-card"><div class="setting-card-title"><label for="autoSwitchOnExceptionSettingToggle">异常自动换号</label><label class="switch-control" for="autoSwitchOnExceptionSettingToggle"><input type="checkbox" id="autoSwitchOnExceptionSettingToggle" onchange="setAutoSwitchOnExceptionSetting(this.checked)" aria-describedby="autoSwitchOnExceptionSettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>遇到异常后换号自动执行</strong><span id="autoSwitchOnExceptionSettingState">已关闭 · 异常任务不自动换号</span></div><small id="autoSwitchOnExceptionSettingHint">开启后关闭原账号窗口并按原任务参数换号执行；同一轮最多自动换号一次。</small></div>
-        <div class="setting-card"><div class="setting-card-title"><label for="claudeRecoverySettingToggle">Claude 自动恢复</label><label class="switch-control" for="claudeRecoverySettingToggle"><input type="checkbox" id="claudeRecoverySettingToggle" onchange="setClaudeRecoverySetting(this.checked)" aria-describedby="claudeRecoverySettingHint"><span class="switch-track" aria-hidden="true"></span></label></div><div class="setting-switch-copy"><strong>异常任务交给 Claude 检查和恢复</strong><span id="claudeRecoverySettingState">已关闭 · 异常任务转人工处理</span></div><small id="claudeRecoverySettingHint">自动换号未开启、未成功或再次异常时，由此策略继续处理。</small></div>
       </div>
     </section>
 

@@ -13,19 +13,15 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List, Mapping, Optional
+from typing import List, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import Body, File, Form, Header, HTTPException, UploadFile
+from fastapi import File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import ValidationError
 
-from agent_recovery.context import capture_page_snapshot, error_code_from_exception
-from agent_recovery.config import AgentConfig
-from agent_recovery.service import ExceptionRecoveryService
-from agent_recovery.tools import RecoveryBackend
 
 from .automation import *
 from .config import (
@@ -48,7 +44,6 @@ from .models import (
     AutoDispatchIntervalSetting,
     AutoDispatchSetting,
     AutoSwitchOnExceptionSetting,
-    ClaudeRecoverySetting,
     ConfirmationPresetInput,
     ConfirmationSendRequest,
     IgnoreQuotaSetting,
@@ -73,7 +68,7 @@ from .quota import (
     settle_quota,
 )
 from .schema import default_processing_limit, ensure_schema as ensure_web_schema
-from .utils import adaptive_poll, automatic_step_delay, concise_job_title, safe, set_job_page_title, ts
+from .utils import adaptive_poll, automatic_step_delay, concise_job_title, error_code_from_exception, safe, set_job_page_title, ts
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +81,7 @@ def session_binding(url: str) -> tuple[str, str]:
 
 
 def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloads_dir, serialize,
-                    close_browser=None, existing_browser=None, recovery_service=None):
+                    close_browser=None, existing_browser=None):
     base = Path(base_dir).resolve()
     downloads = Path(downloads_dir).resolve()
     asset_dir = base / "data" / "web_assets"
@@ -150,9 +145,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         return row is not None
 
     def account_is_busy(account_id: str, ignore_jobid: str = "") -> bool:
-        account_pending = getattr(recovery_service, "account_pending", None)
-        if account_pending is not None and account_pending(account_id):
-            return True
         if account_owners.get(account_id, set()) - {ignore_jobid}:
             return True
         if persisted_account_is_busy(account_id, ignore_jobid):
@@ -635,14 +627,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             ).fetchone()
         return bool(row) and str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
 
-    def local_claude_recovery_enabled() -> bool:
-        with db() as c:
-            row = c.execute(
-                "SELECT value FROM local_settings WHERE key='claude_recovery_enabled'"
-            ).fetchone()
-        if row is None:
-            return True
-        return str(row["value"]).strip().lower() in ("1", "true", "yes", "on")
 
     def local_auto_switch_on_exception() -> bool:
         with db() as c:
@@ -828,38 +812,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             )
         return {"ignore_quota_check": payload.ignore_quota_check}
 
-    @app.get("/api/settings/claude-recovery", tags=["Local Settings"])
-    async def get_claude_recovery_setting():
-        ensure_schema()
-        environment_enabled = AgentConfig.from_env().enabled
-        local_enabled = local_claude_recovery_enabled()
-        return {
-            "claude_recovery_enabled": bool(environment_enabled and local_enabled),
-            "environment_enabled": environment_enabled,
-            "active_recoveries": int(getattr(recovery_service, "pending_count", 0) or 0),
-        }
-
-    @app.put("/api/settings/claude-recovery", tags=["Local Settings"])
-    async def update_claude_recovery_setting(payload: ClaudeRecoverySetting):
-        ensure_schema()
-        with db() as c:
-            c.execute(
-                "INSERT INTO local_settings(key,value) VALUES('claude_recovery_enabled',?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ("1" if payload.claude_recovery_enabled else "0",),
-            )
-        if not payload.claude_recovery_enabled:
-            shutdown = getattr(recovery_service, "shutdown", None)
-            if shutdown is not None:
-                await shutdown()
-        environment_enabled = AgentConfig.from_env().enabled
-        return {
-            "claude_recovery_enabled": bool(
-                environment_enabled and payload.claude_recovery_enabled
-            ),
-            "environment_enabled": environment_enabled,
-            "active_recoveries": int(getattr(recovery_service, "pending_count", 0) or 0),
-        }
 
     @app.get("/api/settings/auto-switch-on-exception", tags=["Local Settings"])
     async def get_auto_switch_on_exception_setting():
@@ -995,95 +947,19 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         val["web"].pop("extension_binding_token", None)
         val["task_name"] = val["web"].get("task_name") or ""
         val["video_file_url"] = f"/api/jobs/{jobid}/video" if row["video_path"] else None
-        status_for_job = getattr(recovery_service, "status_for_job", None)
-        if status_for_job is not None:
-            val["recovery"] = status_for_job(jobid)
         if quota: val["quota"] = quota
         return val
 
-    def load_recovery_context(jobid: str) -> dict:
-        with db() as c:
-            row = c.execute(
-                "SELECT j.id,j.account_id,j.status,j.video_path,"
-                "w.phase,w.error_code,w.web_page_url,w.quota_state,"
-                "w.submit_mode,w.result_push_url,w.delivery_state,w.attempt,"
-                "w.session_url,w.session_id,w.result_card_index,w.assets_json "
-                "FROM jobs j LEFT JOIN video_web_jobs w ON j.id=w.job_id "
-                "WHERE j.id=?",
-                (jobid,),
-            ).fetchone()
-            events = c.execute(
-                "SELECT status,message,timestamp FROM video_web_events "
-                "WHERE job_id=? ORDER BY id DESC LIMIT 30",
-                (jobid,),
-            ).fetchall()
-        job_state = dict(row) if row else {}
-        if row:
-            owners = account_owners.get(row["account_id"] or "", set())
-            other_owner = next((owner for owner in owners if owner != jobid), "")
-            job_state["account_owner_job_id"] = (
-                jobid if jobid in owners else other_owner
-            )
-            job_state["account_owner_job_ids"] = sorted(owners)
-            job_state["account_owned_by_job"] = not owners or jobid in owners
-        return {
-            "job_state": job_state,
-            "recent_events": [dict(event) for event in reversed(events)],
-        }
 
-    async def notify_recovery(
-        jobid: str,
-        error_type: str,
-        error_code: str,
-        error_message: str,
-        *,
-        account_id: str = "",
-        page=None,
-        page_snapshot: dict | None = None,
-        recent_network_errors: list | None = None,
-    ) -> bool:
-        """Best-effort Agent handoff. It never raises into business handling."""
-        if recovery_service is None:
-            return False
-        try:
-            snapshot = page_snapshot
-            if snapshot is None and page is not None:
-                snapshot = await capture_page_snapshot(page)
-            scheduled = recovery_service.notify_exception(
-                job_id=jobid,
-                account_id=account_id,
-                error_type=error_type,
-                error_code=error_code,
-                error_message=error_message,
-                page_snapshot=snapshot,
-                recent_network_errors=recent_network_errors,
-            )
-            if not scheduled:
-                logger.debug(
-                    "Agent recovery was not scheduled for job %s (%s)",
-                    jobid,
-                    error_code,
-                )
-            return bool(scheduled)
-        except Exception:
-            logger.exception(
-                "Agent recovery dispatch failed for job %s (%s)",
-                jobid,
-                error_code,
-            )
-            return False
-
-    async def record_recovery_failure(
+    async def record_action_failure(
         jobid: str,
         exc: BaseException,
         *,
-        account_id: str,
-        page=None,
         error_code: str = "",
         error_message: str = "",
         url: str = "",
     ) -> None:
-        """Persist a failed manual action and hand it to the recovery agent."""
+        """Persist a failed manual action for human review."""
         code = error_code or error_code_from_exception(exc)
         detail = str(
             error_message
@@ -1101,16 +977,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 emit(jobid, "needs_review", detail, code=code, url=url)
             except Exception:
                 logger.exception(
-                    "Could not persist recovery failure for job %s", jobid
+                    "Could not persist manual action failure for job %s", jobid
                 )
-        await notify_recovery(
-            jobid,
-            type(exc).__name__,
-            code,
-            detail,
-            account_id=account_id,
-            page=page,
-        )
 
     def assemble_req(jobid):
         with db() as c:
@@ -1393,7 +1261,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         account_claimed = False
         download_succeeded = False
         ctx = None
-        recovery_error = None
+        worker_error_code = ""
         try:
             async with browser_slot(jobid):
                 with db() as c:
@@ -1526,18 +1394,10 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 download_succeeded = True
         except ReviewNeeded as e:
             emit(jobid, "needs_review", e.message, code=e.code)
-            recovery_error = {
-                "error_type": type(e).__name__,
-                "error_code": e.code,
-                "error_message": e.message,
-            }
+            worker_error_code = e.code
         except Exception as e:
             emit(jobid, "needs_review", str(e)[:350], code="WORKER_EXCEPTION")
-            recovery_error = {
-                "error_type": type(e).__name__,
-                "error_code": "WORKER_EXCEPTION",
-                "error_message": str(e),
-            }
+            worker_error_code = "WORKER_EXCEPTION"
         finally:
             heartbeat_stop.set()
             if heartbeat_task is not None:
@@ -1554,28 +1414,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 await release_account_slot_if_finished(jobid, req.account_id)
             auto_switched = False
             if (
-                recovery_error is not None
+                worker_error_code
                 and auto_switch_allowed
                 and local_auto_switch_on_exception()
             ):
                 auto_switched = await auto_switch_after_exception(
                     jobid,
                     req.account_id or "",
-                    recovery_error["error_code"],
-                )
-            if recovery_error is not None and not auto_switched:
-                agent_page = prepared_pages.get(jobid)
-                if agent_page is None and ctx is not None:
-                    pages = list(getattr(ctx, "pages", []) or [])
-                    if pages:
-                        agent_page = pages[-1]
-                await notify_recovery(
-                    jobid,
-                    recovery_error["error_type"],
-                    recovery_error["error_code"],
-                    recovery_error["error_message"],
-                    account_id=req.account_id or "",
-                    page=agent_page,
+                    worker_error_code,
                 )
             if download_succeeded:
                 await cleanup_downloaded_browser(jobid, req.account_id)
@@ -2088,7 +1934,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         status = item.get("status") or ""
         web = item["web"]
         recalling = (web.get("recall_state") or "") == "recalling"
-        recovering = bool((item.get("recovery") or {}).get("active"))
         takeover = bool(web.get("operator_takeover"))
         live_page = prepared_pages.get(item["id"])
         try:
@@ -2111,14 +1956,12 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             else "进入调度" if pending_status
             else "提交素材"
         )
-        blocked = recovering and not takeover
-        busy_reason = "Claude 正在处理该任务，请等待恢复结束"
         return [
             {
                 "key": first_key,
                 "label": first_label,
-                "enabled": takeover or (not blocked and can_prepare and not dispatched),
-                "reason": busy_reason if blocked else (
+                "enabled": takeover or (can_prepare and not dispatched),
+                "reason": (
                     "任务已进入调度，无需重复点击" if dispatched else "当前状态不能提交素材"
                 ),
                 "confirm": "确认把当前任务交给调度器自动执行？" if pending_status
@@ -2127,28 +1970,28 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             {
                 "key": "send",
                 "label": "确认发送",
-                "enabled": takeover or (not blocked and status == MANUAL_WAIT and has_page),
-                "reason": busy_reason if blocked else "仅已准备完成的任务可以确认发送",
+                "enabled": takeover or (status == MANUAL_WAIT and has_page),
+                "reason": "仅已准备完成的任务可以确认发送",
                 "confirm": "确认发送当前任务已经准备好的素材与提示词？",
             },
             {
                 "key": "confirm",
                 "label": "发送确认语",
                 "enabled": takeover or (
-                    not blocked and status in (MANUAL_WAIT, "confirming", "needs_review") and has_page
+                    status in (MANUAL_WAIT, "confirming", "needs_review") and has_page
                 ),
-                "reason": busy_reason if blocked else "当前状态不能发送确认语",
+                "reason": "当前状态不能发送确认语",
                 "confirm": "确认向当前任务网页发送所选确认语？此操作可能继续视频生成。",
             },
             {
                 "key": "download",
                 "label": "下载视频",
                 "enabled": takeover or (
-                    not blocked and not recalling and status in (
+                    not recalling and status in (
                         "downloaded", "needs_review", "failed", MANUAL_WAIT, "confirming", "generating"
                     ) and has_page
                 ),
-                "reason": busy_reason if blocked else (
+                "reason": (
                     "视频正在下载，请等待归档完成" if recalling else "当前任务还没有可关联的任务网页"
                 ),
                 "confirm": "",
@@ -2157,9 +2000,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "key": "push",
                 "label": "再次推送服务器" if web.get("result_pushed_at") else "推送服务器",
                 "enabled": takeover or (
-                    not blocked and bool(item.get("video_path")) and bool(web.get("result_push_url"))
+                    bool(item.get("video_path")) and bool(web.get("result_push_url"))
                 ),
-                "reason": busy_reason if blocked else "需要已归档视频和服务器推送配置",
+                "reason": "需要已归档视频和服务器推送配置",
                 "confirm": "",
             },
         ]
@@ -2264,7 +2107,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "updated_at": item.get("updated_at") or "",
             "last_action_at": last_event.get("timestamp") or item.get("updated_at") or "",
             "last_action": last_event.get("message") or "",
-            "recovery": item.get("recovery") or {},
             "events": events_out,
             "actions": extension_task_actions(item),
             "confirmation_presets": confirmation_presets(),
@@ -2603,9 +2445,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             if item["status"] == "downloaded":
                 raise HTTPException(409, "任务已归档，无需重新开始")
 
-            cancel_recovery = getattr(recovery_service, "cancel_job", None)
-            if cancel_recovery is not None:
-                await cancel_recovery(jobid)
             task = pending.get(jobid)
             if task is not None and not task.done():
                 task.cancel()
@@ -2684,9 +2523,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 return detail(jobid)
             raise HTTPException(409, "任务已经结束，无需取消")
 
-        cancel_recovery = getattr(recovery_service, "cancel_job", None)
-        if cancel_recovery is not None:
-            await cancel_recovery(jobid)
 
         task = pending.get(jobid)
         if task is not None and not task.done():
@@ -3111,12 +2947,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 raise
             except Exception:
                 continue
-        account_pending = getattr(recovery_service, "account_pending", None)
-        if account_pending is not None and account_pending(account_id):
-            raise HTTPException(
-                409,
-                "该账号仍有恢复任务在执行。关闭窗口不会取消任务，请稍后再关闭",
-            )
 
         was_open = (existing_browser(account_id) if existing_browser is not None else None) is not None
         await close_browser(account_id)
@@ -3231,7 +3061,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             raise HTTPException(409, "任务所属账号已删除")
         if bool(account_value(get_account(account_id), "paused", 0)):
             raise HTTPException(409, "账号已暂停使用，请先恢复账号")
-        recovery_recorded = False
+        failure_recorded = False
         try:
             async with locks.setdefault(account_id, asyncio.Lock()):
                 async with browser_slot(jobid):
@@ -3264,26 +3094,16 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     if not sent:
                         emit(jobid, "needs_review", "点击发送后无法证明任务已发出，请人工检查页面",
                              code="SUBMISSION_UNCONFIRMED", url=after.get("url") or "")
-                        await notify_recovery(
-                            jobid,
-                            "SubmissionUnconfirmed",
-                            "SUBMISSION_UNCONFIRMED",
-                            "点击后无法证明提交，禁止自动重复发送",
-                            account_id=account_id,
-                            page=page,
-                        )
-                        recovery_recorded = True
+                        failure_recorded = True
                         raise HTTPException(409, "点击后无法确认是否发送成功；任务已转为需人工处理，禁止重复发送")
                     live = await persisted_url(page, after.get("url") or "")
                     emit(jobid, "confirming", "已发送任务提示词，等待发送确认语", url=live)
                     return detail(jobid)
         except Exception as exc:
-            if not recovery_recorded:
-                await record_recovery_failure(
+            if not failure_recorded:
+                await record_action_failure(
                     jobid,
                     exc,
-                    account_id=account_id,
-                    page=page,
                 )
             raise
 
@@ -3439,11 +3259,9 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     "preset_name": preset["name"], "how": how,
                     "message": "确认语已发送"}
         except Exception as exc:
-            await record_recovery_failure(
+            await record_action_failure(
                 jobid,
                 exc,
-                account_id=account_id,
-                page=page,
             )
             if created_page and page is not None:
                 try:
@@ -3511,8 +3329,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         download_succeeded = False
         account_id = ""
         account_claimed = False
-        recovery_error = None
-        recovery_snapshot = None
         try:
             item = detail(jobid)
             account_id = item.get("account_id")
@@ -3638,24 +3454,12 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 emit(jobid, "downloaded", "重新下载失败，已保留原归档视频：" + e.message, code=e.code)
             else:
                 emit(jobid, "needs_review", e.message, code=e.code)
-            recovery_error = {
-                "error_type": type(e).__name__,
-                "error_code": e.code,
-                "error_message": e.message,
-            }
         except Exception as e:
             if preserve_downloaded:
                 emit(jobid, "downloaded", "重新下载失败，已保留原归档视频：" + str(e)[:300], code="RECALL_EXCEPTION")
             else:
                 emit(jobid, "needs_review", str(e)[:350], code="RECALL_EXCEPTION")
-            recovery_error = {
-                "error_type": type(e).__name__,
-                "error_code": "RECALL_EXCEPTION",
-                "error_message": str(e),
-            }
         finally:
-            if recovery_error is not None:
-                recovery_snapshot = await capture_page_snapshot(page)
             # 下载失败时保留复用页面供人工检查；成功后的关闭策略在释放任务占用后统一判断。
             if page is not None and not download_succeeded and not reused:
                 try:
@@ -3668,15 +3472,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 await release_account_slot_if_finished(jobid, account_id)
             if download_succeeded:
                 await cleanup_downloaded_browser(jobid, account_id, page=page)
-            if recovery_error is not None:
-                await notify_recovery(
-                    jobid,
-                    recovery_error["error_type"],
-                    recovery_error["error_code"],
-                    recovery_error["error_message"],
-                    account_id=account_id or "",
-                    page_snapshot=recovery_snapshot,
-                )
             if not download_succeeded:
                 schedule_idle_close(account_id, jobid)
 
@@ -3882,13 +3677,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     (jobid, current["status"] if current else "downloaded",
                      f"服务器推送失败（第 {attempt} 次）：{message}", ts()),
                 )
-            await notify_recovery(
-                jobid,
-                type(exc).__name__,
-                "RESULT_PUSH_FAILED",
-                message,
-                account_id=row["account_id"] or "",
-            )
             raise HTTPException(502, f"推送 H3 失败：{message}") from exc
 
         pushed_at = ts()
@@ -3934,582 +3722,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "delivery_state": "delivered",
             "delivery_attempts": attempt,
         }
-
-    def recovery_bound_url(item: Mapping) -> str:
-        """Return only a persisted, recognizable Doubao conversation URL."""
-        url = (
-            item.get("web", {}).get("session_url")
-            or item.get("web", {}).get("web_page_url")
-            or ""
-        ).strip()
-        if not url:
-            return ""
-        parsed = urlparse(url)
-        trusted = (
-            parsed.scheme == "https"
-            and parsed.hostname in ("doubao.com", "www.doubao.com")
-        ) or (
-            os.getenv("DOUBAO_TEST_MODE") == "1"
-            and parsed.scheme == "http"
-            and parsed.hostname in ("127.0.0.1", "localhost")
-        )
-        if not trusted or not CHAT_PAGE_URL.search(url):
-            return ""
-        return url
-
-    async def recovery_task_page(
-        jobid: str, *, requested_url: str = ""
-    ) -> tuple[object, dict, dict, str]:
-        """Reuse/open only the task's exact persisted conversation tab."""
-        item = detail(jobid)
-        account_id = item.get("account_id") or ""
-        if not account_id:
-            raise HTTPException(409, "任务所属账号已删除，无法定位任务页")
-        bound_url = recovery_bound_url(item)
-        if not bound_url:
-            raise HTTPException(
-                409,
-                "任务未持久化可识别的豆包会话页；禁止猜测历史标签或其他任务",
-            )
-        if requested_url and requested_url.strip().split("?")[0] != (
-            bound_url.split("?")[0]
-        ):
-            raise HTTPException(
-                409, "请求的页面不是该任务持久化绑定的会话页，已拒绝切换"
-            )
-
-        ctx = await browser(account_id)
-        page = prepared_pages.get(jobid)
-        if page is not None and page.is_closed():
-            prepared_pages.pop(jobid, None)
-            page = None
-        if page is None:
-            key = bound_url.split("?")[0]
-            page = next(
-                (
-                    candidate
-                    for candidate in list(getattr(ctx, "pages", []) or [])
-                    if not candidate.is_closed()
-                    and (getattr(candidate, "url", "") or "").split("?")[0]
-                    == key
-                ),
-                None,
-            )
-        if page is None:
-            page = await ctx.new_page()
-            await page.goto(
-                bound_url, wait_until="domcontentloaded", timeout=60000
-            )
-            await page.wait_for_timeout(800)
-
-        page_title = concise_job_title(
-            item.get("project_id", ""),
-            item.get("episode_id", ""),
-            item.get("shot_id", ""),
-            fallback=item.get("task_name") or jobid,
-        )
-        await set_job_page_title(page, page_title)
-        await page.bring_to_front()
-        try:
-            state = await read_state(page)
-        except Exception:
-            state = {}
-        live_url = (
-            state.get("url") or getattr(page, "url", "") or bound_url
-        ).strip()
-        persisted_url = recovery_bound_url(
-            {"web": {"session_url": live_url}}
-        )
-        if persisted_url:
-            session_url, session_id = session_binding(persisted_url)
-            with db() as c:
-                c.execute(
-                    "UPDATE video_web_jobs SET web_page_url=?,session_url=?,"
-                    "session_id=? WHERE job_id=?",
-                    (session_url, session_url, session_id, jobid),
-                )
-            bound_url = session_url
-        return page, detail(jobid), state, bound_url
-
-    async def recovery_restart_browser(jobid: str, _args=None) -> dict:
-        item = detail(jobid)
-        account_id = item.get("account_id") or ""
-        if not account_id:
-            return {"success": False, "verified": False, "detail": "任务所属账号已删除"}
-        if close_browser is None:
-            return {"success": False, "verified": False, "detail": "未配置浏览器关闭功能"}
-        async with account_condition:
-            owners = account_owners.get(account_id, set())
-            if owners - {jobid}:
-                return {
-                    "success": False,
-                    "verified": False,
-                    "detail": "该账号仍有其他任务在执行，未重启浏览器",
-                }
-        await close_browser(account_id)
-        ctx = await browser(account_id)
-        pages = list(getattr(ctx, "pages", []) or [])
-        return {
-            "success": bool(pages),
-            "verified": bool(pages),
-            "detail": "已通过现有账号浏览器功能重新启动" if pages else "浏览器已启动但没有可用页面",
-        }
-
-    async def recovery_refresh_page(jobid: str, _args=None) -> dict:
-        item = detail(jobid)
-        account_id = item.get("account_id") or ""
-        if not account_id:
-            return {"success": False, "verified": False, "detail": "任务所属账号已删除"}
-        ctx = await browser(account_id)
-        page = prepared_pages.get(jobid)
-        if page is None or page.is_closed():
-            expected = (item["web"].get("web_page_url") or "").split("?")[0]
-            candidates = list(getattr(ctx, "pages", []) or [])
-            page = next(
-                (
-                    candidate
-                    for candidate in candidates
-                    if expected
-                    and (getattr(candidate, "url", "") or "").split("?")[0] == expected
-                ),
-                None,
-            )
-        if page is None or page.is_closed():
-            return {"success": False, "verified": False, "detail": "没有可刷新的原有任务页面"}
-        await page.reload(wait_until="domcontentloaded", timeout=60000)
-        return {
-            "success": True,
-            "verified": not page.is_closed(),
-            "detail": "已刷新原有任务页面",
-            "status": (getattr(page, "url", "") or "").split("?")[0],
-        }
-
-    async def recovery_switch_page(jobid: str, args=None) -> dict:
-        page, item, state, url = await recovery_task_page(
-            jobid, requested_url=str((args or {}).get("url") or "")
-        )
-        return {
-            "success": True,
-            "verified": not page.is_closed(),
-            "recovery_complete": False,
-            "status": item.get("status") or "",
-            "url": state.get("url") or url,
-            "video_card_count": int(state.get("videoCards") or 0),
-            "detail": "已切换并置于前台该任务唯一绑定的豆包会话页",
-        }
-
-    async def recovery_inspect_dom(jobid: str, _args=None) -> dict:
-        page, item, _state, _url = await recovery_task_page(jobid)
-        snapshot = await capture_page_snapshot(page)
-        available = bool(snapshot.get("available"))
-        return {
-            "success": available,
-            "verified": available,
-            "recovery_complete": False,
-            "status": item.get("status") or "",
-            "observation": snapshot,
-            "detail": (
-                "已读取最新任务页 DOM、控件、上传标记和网络错误"
-                if available
-                else f"DOM 读取失败：{snapshot.get('reason') or 'unknown'}"
-            ),
-        }
-
-    async def recovery_dismiss_popup(jobid: str, _args=None) -> dict:
-        page, item, state, _url = await recovery_task_page(jobid)
-        closed = await dismiss_blocking_dialogs(page)
-        return {
-            "success": True,
-            "verified": not page.is_closed(),
-            "recovery_complete": False,
-            "status": item.get("status") or "",
-            "closed_popups": int(closed or 0),
-            "video_card_count": int(state.get("videoCards") or 0),
-            "detail": f"已关闭 {int(closed or 0)} 个带明确关闭控件的干扰弹窗",
-        }
-
-    async def recovery_locate_task_page(jobid: str, _args=None) -> dict:
-        page, item, state, url = await recovery_task_page(jobid)
-        return {
-            "success": True,
-            "verified": not page.is_closed(),
-            "recovery_complete": False,
-            "status": item.get("status") or "",
-            "session_url": url,
-            "session_id": item["web"].get("session_id") or "",
-            "video_card_count": int(state.get("videoCards") or 0),
-            "detail": "已恢复任务与当前豆包会话标签页的绑定",
-        }
-
-    async def recovery_verify_task_status(jobid: str, _args=None) -> dict:
-        item = detail(jobid)
-        page_error = ""
-        state = {}
-        try:
-            _page, item, state, _url = await recovery_task_page(jobid)
-        except Exception as exc:
-            page_error = str(getattr(exc, "detail", "") or exc)[:300]
-        status = item.get("status") or ""
-        downloaded = status == "downloaded"
-        return {
-            "success": True,
-            "verified": bool(status),
-            "recovery_complete": downloaded,
-            "status": status,
-            "phase": item.get("web", {}).get("phase") or "",
-            "video_card_count": int(state.get("videoCards") or 0),
-            "running": bool(state.get("running") or state.get("runningLast")),
-            "page_error": page_error,
-            "detail": (
-                "已核对任务已归档，原业务流程恢复"
-                if downloaded
-                else f"任务当前状态为 {status or 'unknown'}"
-                + (f"；页面读取失败：{page_error}" if page_error else "")
-            ),
-        }
-
-    async def recovery_check_assets(jobid: str, _args=None) -> dict:
-        item = detail(jobid)
-        assets = item.get("web", {}).get("assets") or {}
-        asset_ids = [
-            value
-            for value in (
-                [assets.get("first_frame_asset_id")]
-                + [assets.get("last_frame_asset_id")]
-                + list(assets.get("reference_asset_ids") or [])
-            )
-            if value
-        ]
-        checked = []
-        with db() as c:
-            for asset_id in asset_ids:
-                row = c.execute(
-                    "SELECT stored_path,sha256 FROM video_web_assets WHERE id=?",
-                    (asset_id,),
-                ).fetchone()
-                exists = False
-                if row:
-                    try:
-                        exists = resolved_path(
-                            row["stored_path"], asset_dir
-                        ).is_file()
-                    except Exception:
-                        exists = False
-                checked.append(
-                    {
-                        "asset_id": asset_id,
-                        "exists": exists,
-                        "sha256_present": bool(row and row["sha256"]),
-                    }
-                )
-        missing = [entry["asset_id"] for entry in checked if not entry["exists"]]
-        return {
-            "success": not missing,
-            "verified": True,
-            "recovery_complete": False,
-            "status": item.get("status") or "",
-            "checked_assets": checked,
-            "detail": (
-                "全部任务素材均存在"
-                if not missing
-                else f"缺少 {len(missing)} 个任务素材：{', '.join(missing)}"
-            ),
-        }
-
-    async def recovery_download_video(jobid: str, _args=None) -> dict:
-        return await recovery_recall_existing_result(jobid)
-
-    async def recovery_release_account(jobid: str, _args=None) -> dict:
-        item = detail(jobid)
-        account_id = item.get("account_id") or ""
-        if not account_id:
-            return {
-                "success": False,
-                "verified": False,
-                "recovery_complete": False,
-                "detail": "任务所属账号已删除，无法释放占用",
-            }
-        async with account_condition:
-            owned_before = jobid in account_owners.get(account_id, set())
-        await release_account_slot(jobid, account_id)
-        async with account_condition:
-            released = jobid not in account_owners.get(account_id, set())
-        return {
-            "success": released and owned_before,
-            "verified": released,
-            "recovery_complete": False,
-            "status": item.get("status") or "",
-            "detail": (
-                "已释放该任务的账号使用记录；同账号其他任务不受影响"
-                if released and owned_before
-                else "该任务没有残留的账号占用"
-            ),
-        }
-
-    async def recovery_recall_existing_result(jobid: str, _args=None) -> dict:
-        before = detail(jobid)
-        if before.get("status") == "downloaded":
-            return {
-                "success": False,
-                "verified": False,
-                "detail": "已有归档视频，禁止召回覆盖",
-                "status": "downloaded",
-            }
-        await begin_recall(jobid, wait=False)
-        task = pending.get(jobid)
-        try:
-            observe_seconds = max(
-                0.0,
-                float(os.getenv("DOUBAO_AGENT_RECOVERY_OBSERVE_SECONDS", "20")),
-            )
-        except ValueError:
-            observe_seconds = 20.0
-        if task is not None and observe_seconds:
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=observe_seconds)
-            except asyncio.TimeoutError:
-                pass
-        current = detail(jobid)
-        success = current.get("status") == "downloaded"
-        return {
-            "success": success,
-            "verified": success,
-            "accepted": current.get("status") in ACTIVE,
-            "status": current.get("status") or "",
-            "detail": (
-                "原任务召回成功并已归档，未重新生成"
-                if success
-                else "原任务召回已启动或结束，结果仍需人工核对"
-            ),
-        }
-
-    async def recovery_retry_h3_push(jobid: str, _args=None) -> dict:
-        result = await push_result(jobid)
-        return {
-            "success": bool(result.get("ok")),
-            "verified": result.get("delivery_state") == "delivered",
-            "detail": "已通过现有 H3 回推接口重试，未重新生成视频",
-            "status": result.get("delivery_state") or "",
-        }
-
-    async def recovery_restart_auto(jobid: str, _args=None) -> dict:
-        """Agent action: restart the current job in automatic mode (same job id)."""
-        before = detail(jobid)
-        if before.get("status") == "downloaded":
-            return {
-                "success": False,
-                "verified": False,
-                "detail": "任务已下载完成，不能就地重跑（请改用 regenerate 或召回）",
-                "status": "downloaded",
-            }
-        if jobid in pending and not pending[jobid].done():
-            return {
-                "success": False,
-                "verified": False,
-                "detail": "任务仍在执行，暂不能换号自动执行",
-                "status": before.get("status") or "",
-            }
-        previous_account_id = before.get("account_id") or ""
-        await close_previous_browser_before_restart(jobid, previous_account_id)
-        if before.get("status") == "queued":
-            release_job_quota_hold(jobid)
-        req = await reset_generation(jobid, rematch_account=True)
-        req.submit_mode = "auto"
-        start_worker(jobid, req, previous_account_id or avoid_account_for(jobid))
-        await _await_agent_observation(jobid)
-        current = detail(jobid)
-        success = current.get("status") in ACTIVE or current.get("status") == "downloaded"
-        return {
-            "success": bool(success),
-            "verified": bool(success),
-            "accepted": current.get("status") in ACTIVE,
-            "status": current.get("status") or "",
-            "detail": (
-                "已换号自动执行并进入处理，未产生新任务 ID"
-                if success
-                else "已请求换号自动执行，但状态未推进，仍需人工核对"
-            ),
-        }
-
-    async def recovery_regenerate(jobid: str, _args=None) -> dict:
-        """Agent action: clone the failed job into a new queued job and start it."""
-        original = detail(jobid)
-        if original["status"] not in ("needs_review", "failed", "queued"):
-            return {
-                "success": False,
-                "verified": False,
-                "detail": f"当前状态 {original['status']} 不适合重新生成",
-                "status": original.get("status") or "",
-            }
-        with db() as c:
-            existing = c.execute(
-                """SELECT j.id,j.status FROM jobs j JOIN video_web_jobs w ON w.job_id=j.id
-                   WHERE w.retry_of_job_id=? AND j.status NOT IN ('needs_review','failed')
-                   ORDER BY j.created_at DESC LIMIT 1""",
-                (jobid,),
-            ).fetchone()
-        if existing:
-            return {
-                "success": True,
-                "verified": existing["status"] in ACTIVE or existing["status"] == "downloaded",
-                "detail": f"已存在重试任务 {existing['id']}，未重复创建",
-                "status": existing["status"],
-                "new_job_id": existing["id"],
-            }
-        req = assemble_req(jobid)
-        previous_account_id = req.account_id or ""
-        req.account_id = None
-        req.idempotency_key = None
-        req.auto_start = True
-        base_name = (req.task_name or original.get("task_name") or jobid).strip()
-        req.task_name = (base_name + " · Agent重试")[:160]
-        created = create_generation(
-            req, retry_of_job_id=jobid, avoid_account_id=previous_account_id
-        )
-        await _await_agent_observation(created["id"])
-        current = detail(created["id"])
-        success = current.get("status") in ACTIVE or current.get("status") == "downloaded"
-        return {
-            "success": bool(success),
-            "verified": bool(success),
-            "accepted": current.get("status") in ACTIVE,
-            "status": current.get("status") or "",
-            "new_job_id": created["id"],
-            "detail": (
-                f"已创建新任务 {created['id']} 并重新生成，原任务保留"
-                if success
-                else f"已创建新任务 {created['id']}，但状态未推进，仍需人工核对"
-            ),
-        }
-
-    async def _await_agent_observation(jobid: str) -> None:
-        """短暂等待任务推进，让代理拿到可验证的状态而不是立刻的 queued。"""
-        try:
-            observe_seconds = max(
-                0.0,
-                float(os.getenv("DOUBAO_AGENT_RECOVERY_OBSERVE_SECONDS", "20")),
-            )
-        except ValueError:
-            observe_seconds = 20.0
-        deadline = asyncio.get_running_loop().time() + observe_seconds
-        while observe_seconds and asyncio.get_running_loop().time() < deadline:
-            if detail(jobid).get("status") not in ("queued", "ready"):
-                return
-            await asyncio.sleep(0.2)
-
-    if recovery_service is None:
-        recovery_service = ExceptionRecoveryService(
-            backend=RecoveryBackend(
-                restart_browser=recovery_restart_browser,
-                refresh_page=recovery_refresh_page,
-                switch_page=recovery_switch_page,
-                inspect_dom=recovery_inspect_dom,
-                dismiss_popup=recovery_dismiss_popup,
-                locate_task_page=recovery_locate_task_page,
-                verify_task_status=recovery_verify_task_status,
-                check_assets=recovery_check_assets,
-                recall_existing_result=recovery_recall_existing_result,
-                download_video=recovery_download_video,
-                retry_h3_push=recovery_retry_h3_push,
-                restart_auto=recovery_restart_auto,
-                regenerate=recovery_regenerate,
-                release_account=recovery_release_account,
-            ),
-            context_loader=load_recovery_context,
-            log_dir=base / "data" / "agent_recovery",
-            enabled_provider=local_claude_recovery_enabled,
-        )
-    app.state.video_recovery_service = recovery_service
-
-    @app.post(
-        "/api/internal/agent-recovery/tool",
-        include_in_schema=False,
-    )
-    async def agent_recovery_tool_bridge(
-        payload: dict = Body(...),
-        x_doubao_agent_token: Optional[str] = Header(None),
-    ):
-        """Token-scoped bridge used only by the recovery MCP subprocess."""
-        execute_tool = getattr(recovery_service, "execute_tool", None)
-        if execute_tool is None:
-            raise HTTPException(503, "恢复工具桥未启用")
-        try:
-            return await execute_tool(
-                job_id=str(payload.get("job_id") or ""),
-                token=str(x_doubao_agent_token or ""),
-                tool=str(payload.get("tool") or ""),
-                arguments=payload.get("arguments") or {},
-            )
-        except PermissionError as exc:
-            raise HTTPException(403, str(exc)) from exc
-
-    recoverable_existing_codes = {
-        "WORKER_EXCEPTION",
-        "WEB_AUTOMATION_ERROR",
-        "BROWSER_START_FAILED",
-        "PAGE_LOAD_FAILED",
-        "WAIT_TIMEOUT",
-        "RESULT_NOT_READY",
-        "RESULT_URL_NOT_FOUND",
-        "DETAIL_SAVE_NOT_FOUND",
-        "RECALL_EXCEPTION",
-        "DOWNLOAD_FAILED",
-        "RESULT_PUSH_FAILED",
-        "SETTING_NOT_FOUND",
-        "SETTING_UNSUPPORTED",
-        "SETTING_UNVERIFIED",
-        "MODEL_NOT_FOUND",
-        "MODEL_UNVERIFIED",
-        "MODEL_TRIGGER_NOT_FOUND",
-        "UPLOAD_SLOT_NOT_FOUND",
-        "UPLOAD_UNVERIFIED",
-        "UPLOAD_COUNT_MISMATCH",
-        "EDITOR_NOT_FOUND",
-        "PROMPT_UNVERIFIED",
-        "SUBMIT_NOT_FOUND",
-        "SUBMISSION_UNCONFIRMED",
-        "CONFIRM_NOT_SENT",
-        "CONFIRM_REQUIRED",
-        "GENERATION_FAILED",
-        "DURATION_MISMATCH",
-        "RESULT_BINDING_MISSING",
-        "MANUAL_SEND_INTERRUPTED",
-        "INTERRUPTED_REVIEW_REQUIRED",
-    }
-
-    async def resume_recoverable_jobs() -> int:
-        """Hand pre-existing safe failures to the Agent once after startup."""
-        with db() as c:
-            rows = c.execute(
-                "SELECT j.id,j.account_id,j.error_message,j.video_path,"
-                "w.phase,w.error_code,w.web_page_url,w.quota_state "
-                "FROM jobs j JOIN video_web_jobs w ON j.id=w.job_id "
-                "WHERE j.status='needs_review' "
-                "ORDER BY j.updated_at ASC"
-            ).fetchall()
-
-        scheduled = 0
-        for row in rows:
-            code = row["error_code"] or ""
-            if code not in recoverable_existing_codes:
-                continue
-            if row["quota_state"] == "unknown":
-                continue
-            if code == "RESULT_PUSH_FAILED" and not row["video_path"]:
-                continue
-            handed_off = await notify_recovery(
-                row["id"],
-                "RecoverableException",
-                code,
-                row["error_message"] or row["phase"] or code,
-                account_id=row["account_id"] or "",
-            )
-            scheduled += int(handed_off)
-        if scheduled:
-            logger.info("Handed %s pre-existing failures to Agent recovery", scheduled)
-        return scheduled
-
-    app.state.video_resume_recovery = resume_recoverable_jobs
 
     def redispatch_queued_jobs() -> int:
         """Re-admit auto jobs that are queued but have no live worker.

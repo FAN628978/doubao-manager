@@ -345,6 +345,35 @@ def test_auto_switch_on_exception_setting_defaults_off_and_persists(bridge):
     }
 
 
+def test_worker_failure_stays_for_human_review_with_legacy_claude_setting(bridge, monkeypatch):
+    monkeypatch.setenv("DOUBAO_AGENT_ENABLED", "1")
+    with application.db() as conn:
+        conn.execute(
+            "INSERT INTO local_settings(key,value) VALUES('claude_recovery_enabled','1')"
+        )
+    bridge["failures"]["remaining"] = 1
+    with bridge["session"]() as client:
+        assert client.get("/api/settings/claude-recovery").status_code == 404
+        assert client.put(
+            "/api/settings/claude-recovery", json={"claude_recovery_enabled": True}
+        ).status_code == 404
+        assert client.post("/api/internal/agent-recovery/tool", json={}).status_code == 404
+        assert not hasattr(client.app.state, "video_recovery_service")
+        assert not hasattr(client.app.state, "video_resume_recovery")
+        _set_mode(client, "auto")
+        _set_auto_dispatch(client, True)
+        created = client.post("/api/v1/videos/generations", json={
+            "prompt": "异常后等待人工复查", "duration": 4,
+        })
+        assert created.status_code == 202, created.text
+        state = _wait_status(client, created.json()["id"], {"needs_review"})
+        assert state["status"] == "needs_review", state
+        assert state["web"]["error_code"] == "WORKER_EXCEPTION"
+        assert state["web"]["quota_state"] == "released"
+        assert "recovery" not in state
+        assert bridge["execution_accounts"] == ["account_1"]
+
+
 def test_worker_exception_switches_account_and_restarts_once(bridge, tmp_path):
     with application.db() as conn:
         conn.execute(
@@ -599,7 +628,7 @@ def test_dispatch_button_shows_waiting_state():
     body = source[source.index("function fixedJobActions"):]
     body = body[:body.index("\n  function filteredJobs")]
     assert "'⏳ 已放行 · 排队中'" in source
-    assert "disabled:!takeover&&(recovering||!canPrepare||dispatched)" in body
+    assert "disabled:!takeover&&(!canPrepare||dispatched)" in body
     assert "已交给调度器，正在等处理名额或可用账号" in source
 
 

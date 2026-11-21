@@ -69,7 +69,6 @@ def _job(job_id, status="downloaded", **overrides):
         "archived": False,
         "operator_takeover": False,
         "manual_confirm_sent": False,
-        "recovery": {},
     }
     job.update(overrides)
     return job
@@ -95,13 +94,11 @@ class Server:
         self.task_acceptance_updates = []
         self.submit_mode = "auto"
         self.submit_mode_updates = []
-        self.member_video_model = "Seedance 2.0"
-        self.non_member_video_model = "Seedance 2.0 Mini"
+        self.member_video_model = "Seedance 2.0 Fast"
+        self.non_member_video_model = "Seedance 2.0 Fast"
         self.video_model_updates = []
         self.ignore_quota_check = False
         self.ignore_quota_updates = []
-        self.claude_recovery_enabled = False
-        self.claude_recovery_updates = []
         self.auto_switch_on_exception = False
         self.auto_switch_on_exception_updates = []
         self.job_account_updates = []
@@ -244,8 +241,7 @@ class Server:
                     "member_model": self.member_video_model,
                     "non_member_model": self.non_member_video_model,
                     "available_models": [
-                        "Seedance 2.5", "Seedance 2.0",
-                        "Seedance 2.0 Fast", "Seedance 2.0 Mini",
+                        "Seedance 2.0 Fast",
                     ],
                 }),
             )
@@ -261,24 +257,6 @@ class Server:
                 status=200,
                 content_type="application/json",
                 body=_json({"ignore_quota_check": self.ignore_quota_check}),
-            )
-        elif url.endswith("/api/settings/claude-recovery"):
-            if route.request.method == "PUT":
-                body = json.loads(route.request.post_data or "{}")
-                self.claude_recovery_enabled = bool(
-                    body.get("claude_recovery_enabled")
-                )
-                self.claude_recovery_updates.append(
-                    self.claude_recovery_enabled
-                )
-            await route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=_json({
-                    "claude_recovery_enabled": self.claude_recovery_enabled,
-                    "environment_enabled": True,
-                    "active_recoveries": 0,
-                }),
             )
         elif url.endswith("/api/settings/auto-switch-on-exception"):
             if route.request.method == "PUT":
@@ -344,6 +322,46 @@ async def _open_page(browser, server):
 async def _show_finished(page):
     await page.evaluate("() => setJobSection('finished')")
     await page.wait_for_timeout(120)
+
+
+def test_removed_claude_recovery_does_not_block_manual_actions_or_settings():
+    async def run():
+        server = Server()
+        server.jobs = [_job(
+            "job_review", status="needs_review", has_task_page=True,
+            web_page_url="https://www.doubao.com/chat/review",
+            recovery={"active": True, "state": "acting", "detail": "Claude 处理中"},
+        )]
+        requests = []
+        original_handle = server.handle
+
+        async def handle(route):
+            requests.append(route.request.url)
+            await original_handle(route)
+
+        server.handle = handle
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => {switchView('jobs');setJobSection('processing')}")
+                row = page.locator("#jobsTable tr[data-job-id='job_review']")
+                assert "Claude" not in await row.inner_text()
+                assert "需要人工打开任务页面检查" in await row.inner_text()
+                assert await row.get_by_role("button", name="1 提交素材", exact=True).is_enabled()
+                assert await row.get_by_role("button", name="4 下载视频", exact=True).is_enabled()
+                await page.evaluate("() => openSubmitModeSettings()")
+                assert await page.locator("#claudeRecoverySettingToggle").count() == 0
+                await page.evaluate("() => $('submitModeForm').requestSubmit()")
+                await page.wait_for_function(
+                    "() => !document.getElementById('submitModeModal').classList.contains('show')"
+                )
+                assert server.submit_mode_updates == ["auto"]
+                assert not any("claude-recovery" in url for url in requests)
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
 
 
 def test_silent_refresh_updates_changed_row_content():
@@ -626,7 +644,7 @@ def test_row_signature_covers_every_rendered_field():
         "submit_mode", "task_name", "has_task_page", "web_page_url",
         "session_url", "session_id", "result_card_index",
         "recall_state", "can_push_result", "result_pushed_at",
-        "result_push_error", "operator_takeover", "error_code", "updated_at", "recovery",
+        "result_push_error", "operator_takeover", "error_code", "updated_at",
     }
     missing = must_have - fields
     assert not missing, f"行签名缺少字段：{sorted(missing)}"
@@ -858,89 +876,6 @@ def test_processing_stat_includes_attention(tmp_path, monkeypatch):
         assert stats["processing"] == 1
         assert stats["processing_running"] == 0
 
-
-def test_jobs_api_exposes_live_claude_status(tmp_path, monkeypatch):
-    import app as application
-    from fastapi.testclient import TestClient
-
-    monkeypatch.setattr(application, "DB_PATH", tmp_path / "recovery.sqlite3")
-    with TestClient(application.app) as client:
-        created = client.post("/api/jobs", json={
-            "prompt": "Claude status",
-            "project_id": "project",
-            "episode_id": "episode",
-            "shot_id": "shot",
-        })
-        assert created.status_code == 201, created.text
-        job_id = created.json()["id"]
-        service = application.app.state.video_recovery_service
-        monkeypatch.setattr(
-            service,
-            "status_for_job",
-            lambda requested: {
-                "active": requested == job_id,
-                "backend": "claude-cli",
-                "state": "acting",
-                "action": "inspect_dom",
-                "detail": "Claude is inspecting the page",
-            },
-        )
-        jobs = client.get("/api/jobs").json()
-
-    target = next(job for job in jobs if job["id"] == job_id)
-    assert target["recovery"]["active"] is True
-    assert target["recovery"]["backend"] == "claude-cli"
-    assert target["recovery"]["action"] == "inspect_dom"
-
-
-def test_claude_recovery_status_is_visible_and_updates_in_browser():
-    async def run():
-        server = Server()
-        server.jobs = [_job(
-            "job_agent",
-            status="needs_review",
-            recovery={
-                "active": True,
-                "backend": "claude-cli",
-                "state": "acting",
-                "phase": "tool",
-                "action": "inspect_dom",
-                "detail": "Claude 正在检查页面",
-            },
-        )]
-        async with async_playwright() as pw:
-            browser = await launch_chromium(pw)
-            try:
-                page = await _open_page(browser, server)
-                await page.evaluate("() => switchView('jobs')")
-                await page.evaluate("() => setJobSection('processing')")
-                await page.wait_for_timeout(150)
-                active_text = await page.inner_text("#jobsTable")
-                assert "Claude 处理中" in active_text
-                assert "Claude 正在检查页面" in active_text
-                assert "检查页面 DOM" in active_text
-
-                server.jobs = [_job(
-                    "job_agent",
-                    status="needs_review",
-                    recovery={
-                        "active": False,
-                        "backend": "claude-cli",
-                        "state": "needs_human",
-                        "manual_reason": "需要人工登录豆包",
-                        "detail": "需要人工登录豆包",
-                    },
-                )]
-                await page.evaluate("() => refreshAll({silent:true})")
-                await page.wait_for_timeout(250)
-                finished_text = await page.inner_text("#jobsTable")
-                assert "Claude 处理中" not in finished_text
-                assert "Claude 已转人工" in finished_text
-                assert "需要人工登录豆包" in finished_text
-            finally:
-                await browser.close()
-
-    asyncio.run(run())
 
 def test_subgroup_bar_renders_and_filters_in_browser():
     """真实页面：正在处理下出现 全部 / 正常 / 异常待人工，点击可筛选。"""
@@ -1222,8 +1157,12 @@ def test_automation_switches_are_saved_independently():
                 ) == "定时已关闭 · 可先设置执行时间"
                 assert await page.inner_text("#dispatchFlowState") == "自动进入调度"
                 assert await page.inner_text("#executionFlowState") == "自动执行完整流程"
-                assert await page.input_value("#memberModelSetting") == "Seedance 2.0"
-                assert await page.input_value("#nonMemberModelSetting") == "Seedance 2.0 Mini"
+                for selector in ("#memberModelSetting", "#nonMemberModelSetting"):
+                    assert await page.locator(f"{selector} option").all_text_contents() == [
+                        "Seedance 2.0 Fast"
+                    ]
+                assert await page.input_value("#memberModelSetting") == "Seedance 2.0 Fast"
+                assert await page.input_value("#nonMemberModelSetting") == "Seedance 2.0 Fast"
 
                 await page.click("#autoDispatchSettingToggle")
                 await page.fill("#autoDispatchIntervalSetting", "12")
@@ -1252,7 +1191,7 @@ def test_automation_switches_are_saved_independently():
                 """)
                 assert next_day_countdown == "距离下次执行还有 23:15:00"
                 await page.select_option("#memberModelSetting", "Seedance 2.0 Fast")
-                await page.select_option("#nonMemberModelSetting", "Seedance 2.5")
+                await page.select_option("#nonMemberModelSetting", "Seedance 2.0 Fast")
                 assert not await page.is_checked("#autoDispatchSettingToggle")
                 assert await page.is_checked("#autoExecutionSettingToggle")
                 assert await page.inner_text("#dispatchFlowState") == "等待手动放行"
@@ -1266,7 +1205,7 @@ def test_automation_switches_are_saved_independently():
                 assert server.scheduled_dispatch_updates == [(True, "03:15")]
                 assert server.submit_mode_updates == ["auto"]
                 assert server.video_model_updates == [
-                    ("Seedance 2.0 Fast", "Seedance 2.5")
+                    ("Seedance 2.0 Fast", "Seedance 2.0 Fast")
                 ]
                 assert await page.evaluate(
                     "() => state.autoDispatchEnabled"
@@ -1437,41 +1376,6 @@ def test_global_quota_override_is_saved_from_task_settings():
 
                 await page.evaluate("() => openSubmitModeSettings()")
                 assert await page.is_checked("#ignoreQuotaSettingToggle")
-            finally:
-                await browser.close()
-
-    asyncio.run(run())
-
-
-def test_claude_recovery_switch_is_saved_from_task_settings():
-    async def run():
-        server = Server()
-        async with async_playwright() as pw:
-            browser = await launch_chromium(pw)
-            try:
-                page = await _open_page(browser, server)
-                await page.evaluate("() => openSubmitModeSettings()")
-                assert not await page.is_checked("#claudeRecoverySettingToggle")
-                await page.click("#claudeRecoverySettingToggle")
-                assert await page.is_checked("#claudeRecoverySettingToggle")
-                assert await page.evaluate(
-                    "() => state.settingClaudeRecovery"
-                ) is True
-                assert "已开启" in await page.inner_text(
-                    "#claudeRecoverySettingState"
-                )
-
-                await page.evaluate("() => $('submitModeForm').requestSubmit()")
-                await page.wait_for_function(
-                    "() => !document.getElementById('submitModeModal').classList.contains('show')"
-                )
-                assert server.claude_recovery_updates == [True]
-                assert await page.evaluate(
-                    "() => state.claudeRecoveryEnabled"
-                ) is True
-
-                await page.evaluate("() => openSubmitModeSettings()")
-                assert await page.is_checked("#claudeRecoverySettingToggle")
             finally:
                 await browser.close()
 
