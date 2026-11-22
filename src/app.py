@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from playwright.async_api import async_playwright, BrowserContext, Playwright
 
+from doubao_manager.account_names import read_doubao_account_name
 from doubao_manager.chrome_runtime import extension_launch_args, resolve_project_chrome
 
 from doubao_manager.windows_taskbar import (
@@ -107,6 +108,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS accounts (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
+                follow_doubao_name INTEGER NOT NULL DEFAULT 1,
                 note TEXT NOT NULL DEFAULT '',
                 profile_dir TEXT NOT NULL,
                 is_member INTEGER NOT NULL DEFAULT 0,
@@ -143,6 +145,8 @@ def init_db() -> None:
             """
         )
         account_columns = {row["name"] for row in conn.execute("PRAGMA table_info(accounts)")}
+        if "follow_doubao_name" not in account_columns:
+            conn.execute("ALTER TABLE accounts ADD COLUMN follow_doubao_name INTEGER NOT NULL DEFAULT 1")
         if "is_member" not in account_columns:
             conn.execute("ALTER TABLE accounts ADD COLUMN is_member INTEGER NOT NULL DEFAULT 0")
         if "priority" not in account_columns:
@@ -173,7 +177,7 @@ async def lifespan(app: FastAPI):
             logger.exception("Could not resume persisted automatic jobs")
     # Always-on maintenance: re-admit auto jobs that lost their worker, and cut
     # off workers that stopped progressing so their locks cannot freeze the queue.
-    maintenance_tasks = []
+    maintenance_tasks = [asyncio.create_task(sync_account_names())]
     for hook in (
         "video_queue_tick",
         "video_scheduled_dispatch",
@@ -240,6 +244,7 @@ async def no_cache_for_frontend(request, call_next):
 class AccountCreate(BaseModel):
     # Optional: an omitted, null or blank name falls back to the doubao0N default.
     name: Optional[str] = Field(default=None, max_length=80)
+    follow_doubao_name: bool = True
     note: str = Field(default="", max_length=500)
     is_member: bool = False
     priority: int = Field(default=0, ge=0, le=1000)
@@ -248,6 +253,8 @@ class AccountCreate(BaseModel):
 class AccountSettings(BaseModel):
     is_member: bool
     priority: int = Field(ge=0, le=1000)
+    name: Optional[str] = Field(default=None, max_length=80)
+    follow_doubao_name: Optional[bool] = None
 
 
 class JobCreate(BaseModel):
@@ -290,6 +297,7 @@ def account_row(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
+        "follow_doubao_name": bool(row["follow_doubao_name"]),
         "note": row["note"],
         "is_member": bool(row["is_member"]),
         "priority": int(row["priority"]),
@@ -560,6 +568,33 @@ async def open_account_browser(account_id: str) -> BrowserContext:
         return context
 
 
+async def sync_account_name(account_id: str, context: BrowserContext) -> None:
+    with db() as conn:
+        row = conn.execute("SELECT follow_doubao_name FROM accounts WHERE id=?", (account_id,)).fetchone()
+    if row is None or not row["follow_doubao_name"]:
+        return
+    for page in reversed(getattr(context, "pages", [])):
+        name = await read_doubao_account_name(page)
+        if open_contexts.get(account_id) is not context:
+            return
+        if name:
+            with db() as conn:
+                conn.execute(
+                    "UPDATE accounts SET name=? WHERE id=? AND follow_doubao_name=1 AND name!=?",
+                    (name, account_id, name),
+                )
+            return
+
+
+async def sync_account_names() -> None:
+    while True:
+        await asyncio.gather(
+            *(sync_account_name(account_id, context) for account_id, context in list(open_contexts.items())),
+            return_exceptions=True,
+        )
+        await asyncio.sleep(5)
+
+
 async def close_account_browser_context(account_id: str) -> None:
     """Close and evict one account's persistent Chrome context."""
     lock = context_locks.setdefault(account_id, asyncio.Lock())
@@ -679,8 +714,8 @@ async def create_account(payload: AccountCreate):
         # A missing, null or blank name falls back to the doubao0N sequence.
         name = (payload.name or "").strip() or next_account_name(conn)
         conn.execute(
-            "INSERT INTO accounts(id, name, note, profile_dir, is_member, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (account_id, name, payload.note.strip(), stored_profile_dir, int(payload.is_member), payload.priority, now_iso()),
+            "INSERT INTO accounts(id, name, follow_doubao_name, note, profile_dir, is_member, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (account_id, name, int(payload.follow_doubao_name), payload.note.strip(), stored_profile_dir, int(payload.is_member), payload.priority, now_iso()),
         )
         row = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -695,6 +730,14 @@ async def update_account_settings(account_id: str, payload: AccountSettings):
             "UPDATE accounts SET is_member = ?, priority = ? WHERE id = ?",
             (int(payload.is_member), payload.priority, account_id),
         )
+        if payload.follow_doubao_name is not None:
+            conn.execute("UPDATE accounts SET follow_doubao_name=? WHERE id=?", (int(payload.follow_doubao_name), account_id))
+        if payload.name is not None and payload.name.strip():
+            conn.execute("UPDATE accounts SET name=? WHERE id=? AND follow_doubao_name=0", (payload.name.strip(), account_id))
+    context = open_contexts.get(account_id)
+    if context is not None:
+        await sync_account_name(account_id, context)
+    with db() as conn:
         row = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
     return account_row(row)
 
@@ -702,7 +745,8 @@ async def update_account_settings(account_id: str, payload: AccountSettings):
 @app.post("/api/accounts/{account_id}/open")
 async def open_account(account_id: str):
     get_account(account_id)
-    await open_account_browser(account_id)
+    context = await open_account_browser(account_id)
+    await sync_account_name(account_id, context)
     return {"ok": True, "account_id": account_id, "browser_open": True, "message": "浏览器已打开；请在窗口内手动登录并完成豆包页面操作。"}
 
 

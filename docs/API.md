@@ -5,6 +5,10 @@
 - Swagger 文档：`http://127.0.0.1:8765/docs`
 - 完整项目说明：见 `README.md`
 
+账号创建接口 `POST /api/accounts` 默认使用 `follow_doubao_name=true`。账号浏览器打开并登录后，服务每 5 秒读取豆包头像旁的用户名并保存为账号名称；未登录或读取失败时保留原名。旧账号升级后也默认启用，登录前仍使用原名称。
+
+`GET /api/accounts` 返回 `follow_doubao_name` 字段。若需手动命名，可通过 `PATCH /api/accounts/{id}` 提交 `{"is_member":false,"priority":0,"follow_doubao_name":false,"name":"自定义名称"}`；会员与优先级请传入账号当前值。旧客户端不传新增字段时，保留原有跟随设置。
+
 ---
 
 ## 一、接口总览（只需三个）
