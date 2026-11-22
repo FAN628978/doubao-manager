@@ -1050,6 +1050,98 @@ def test_dispatch_button_shows_waiting_state():
     assert "已交给调度器，正在等处理名额或可用账号" in source
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("submit_mode", ["manual", "auto"])
+def test_undispatch_stops_waiting_worker_and_allows_redispatch(bridge, legacy, submit_mode):
+    with bridge["session"]() as client:
+        _set_mode(client, submit_mode)
+        if not legacy:
+            _set_auto_dispatch(client, False)
+        client.put("/api/settings/processing-limit", json={"processing_limit": 1})
+        blocker = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "占用名额", "duration": 4,
+            "auto_start": True, "submit_mode": "auto",
+        }).json()
+        assert _wait_status(client, blocker["id"], set(web_api.ACTIVE))["status"] in web_api.ACTIVE
+        waiting = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "可撤回的排队任务", "duration": 4,
+            "auto_start": False, "submit_mode": submit_mode,
+        }).json()
+        job_id = waiting["id"]
+        path = f"/api/v1/videos/generations/{job_id}"
+        assert client.post(f"{path}/dispatch").status_code == 200
+        response = client.post(f"{path}/undispatch")
+        assert response.status_code == 200, response.text
+        item = response.json()
+        assert item["status"] == "queued"
+        assert item["account_id"] == "account_1"
+        assert item["web"]["dispatched_at"] == ""
+        assert item["web"]["submit_mode"] == submit_mode
+        with application.db() as conn:
+            assert web_api.quota_summary(conn, "account_1")["reserved_seconds"] == 4
+        # Repeating withdrawal must not subtract the running task's reservation.
+        assert client.post(f"{path}/undispatch").status_code == 200
+        with application.db() as conn:
+            assert web_api.quota_summary(conn, "account_1")["reserved_seconds"] == 4
+        async def tick():
+            return client.app.state.video_redispatch()
+        assert client.portal.call(tick) == 0
+        assert _resume_in_loop(client) == 0
+        queue = client.get("/api/v1/videos/queue/status").json()
+        assert queue["pending_dispatched"] == 0
+        assert queue["pending_undispatched"] == 1
+        # A free processing slot must not wake the withdrawn worker.
+        assert client.post(
+            f"/api/v1/videos/generations/{blocker['id']}/cancel?confirm_cancel=true"
+        ).status_code == 200
+        assert client.portal.call(tick) == 0
+        assert client.get(path).json()["status"] == "queued"
+        assert len(bridge["started"]) == 1
+        assert client.post(f"{path}/dispatch").status_code == 200
+        state = _wait_status(client, job_id, set(web_api.ACTIVE))
+        assert state["status"] in web_api.ACTIVE
+        assert state["web"]["dispatched_at"]
+        assert state["web"]["submit_mode"] == submit_mode
+        with application.db() as conn:
+            assert web_api.quota_summary(conn, "account_1")["reserved_seconds"] == 4
+
+
+def test_undispatch_persists_across_restart_and_clears_bypass(bridge):
+    with bridge["session"]() as client:
+        _set_mode(client, "auto")
+        job = client.post("/api/v1/videos/generations", json={
+            "prompt": "重启后等待再次放行", "duration": 4, "auto_start": False,
+        }).json()
+        path = f"/api/v1/videos/generations/{job['id']}"
+        with application.db() as conn:
+            conn.execute(
+                "UPDATE video_web_jobs SET dispatched_at=?,bypass_processing_limit=1,"
+                "next_retry_at=? WHERE job_id=?", (web_api.ts(), web_api.ts(), job["id"]),
+            )
+        response = client.post(f"{path}/undispatch")
+        assert response.status_code == 200, response.text
+        assert not response.json()["web"]["bypass_processing_limit"]
+        assert response.json()["web"]["next_retry_at"] == ""
+    with bridge["session"]() as client:
+        assert _resume_in_loop(client) == 0
+        assert client.get(path).json()["web"]["dispatched_at"] == ""
+        assert bridge["started"] == []
+
+
+def test_undispatch_rejects_running_task(bridge):
+    with bridge["session"]() as client:
+        job = client.post("/api/v1/videos/generations", json={
+            "prompt": "已经开始处理", "duration": 4, "auto_start": True,
+            "submit_mode": "auto",
+        }).json()
+        path = f"/api/v1/videos/generations/{job['id']}"
+        before = _wait_status(client, job["id"], set(web_api.ACTIVE))
+        assert before["status"] in web_api.ACTIVE
+        response = client.post(f"{path}/undispatch")
+        assert response.status_code == 409, response.text
+        assert client.get(path).json()["web"]["dispatched_at"] == before["web"]["dispatched_at"]
+
+
 def test_reset_generation_clears_dispatched_at(bridge):
     """显式重置任务时清除“已放行”，让任务回到未放行状态。"""
     client = bridge["client"]

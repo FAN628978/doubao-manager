@@ -1921,7 +1921,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         if req.account_id:
             ensure_start_quota(jobid, req.account_id)
         with db() as c:
-            c.execute("UPDATE video_web_jobs SET dispatched_at=? WHERE job_id=?", (ts(), jobid))
+            c.execute("UPDATE video_web_jobs SET dispatched_at=?,dispatch_revoked=0 WHERE job_id=?", (ts(), jobid))
             if bypass_processing_limit:
                 c.execute(
                     "UPDATE video_web_jobs SET bypass_processing_limit=1,submit_mode=? WHERE job_id=?",
@@ -2232,6 +2232,48 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             raise HTTPException(409, "账号已归档")
         # 调度只负责放行，不覆盖建单时保存的自动/人工执行方式。
         start_worker(jobid, req, avoid_account_for(jobid))
+        return detail(jobid)
+
+    @app.post("/api/v1/videos/generations/{jobid}/undispatch", tags=["Doubao Web Video"])
+    async def undispatch_job(jobid: str, x_api_key: Optional[str] = Header(None)):
+        """Withdraw a waiting task from dispatch without canceling the task itself."""
+        auth(x_api_key); ensure_schema()
+        item = detail(jobid)
+        if item["status"] not in ("queued", "ready"):
+            raise HTTPException(409, "任务已开始处理，不能取消放行；如需停止请使用取消任务")
+        if not item["web"].get("dispatched_at"):
+            return item
+        # Persist before awaiting worker cleanup so a queue tick cannot re-admit it.
+        with db() as c:
+            c.execute(
+                "UPDATE video_web_jobs SET dispatched_at='',dispatch_revoked=1,"
+                "bypass_processing_limit=0,next_retry_at='' WHERE job_id=?", (jobid,),
+            )
+        task = pending.get(jobid)
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        if pending.get(jobid) is task:
+            pending.pop(jobid, None)
+        await release_processing_job(jobid)
+        account_id = item.get("account_id") or ""
+        if account_id:
+            await release_account_slot(jobid, account_id)
+        release_queued_auto_account(jobid)
+        release_job_quota_hold(jobid)
+        with db() as c:
+            # Empty state with today's quota_day is a legacy reservation marker.
+            # Mark the release explicitly so a later dispatch reserves again.
+            c.execute(
+                "UPDATE video_web_jobs SET quota_state='released' "
+                "WHERE job_id=? AND COALESCE(quota_state,'')=''", (jobid,),
+            )
+            now = ts()
+            c.execute("UPDATE jobs SET updated_at=? WHERE id=?", (now, jobid))
+            c.execute(
+                "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
+                (jobid, item["status"], "已取消放行，任务回到待处理，等待再次进入调度", now),
+            )
         return detail(jobid)
 
     @app.post("/api/v1/videos/generations/{jobid}/dispatch-next", tags=["Doubao Web Video"])
@@ -3754,6 +3796,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             rows = c.execute(
                 "SELECT j.id FROM jobs j JOIN video_web_jobs w ON j.id=w.job_id "
                 "WHERE j.status='queued' "
+                "AND COALESCE(w.dispatch_revoked,0)=0 "
                 "AND (COALESCE(w.dispatched_at,'')!='' "
                 "OR (? AND COALESCE(w.submit_mode,'auto')='auto')) "
                 "AND COALESCE(w.next_retry_at,'') <= ? "
@@ -3954,6 +3997,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "SELECT j.id,j.account_id FROM jobs j "
                 "JOIN video_web_jobs w ON j.id=w.job_id "
                 "WHERE j.status='queued' "
+                "AND COALESCE(w.dispatch_revoked,0)=0 "
                 "AND (COALESCE(w.dispatched_at,'')!='' "
                 "OR (? AND COALESCE(w.submit_mode,'auto')='auto')) "
                 "ORDER BY j.created_at ASC",

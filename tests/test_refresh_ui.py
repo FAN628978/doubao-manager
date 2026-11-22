@@ -395,6 +395,56 @@ def test_silent_refresh_updates_changed_row_content():
     asyncio.run(run())
 
 
+def test_undispatch_single_and_bulk_return_jobs_to_pending():
+    async def run():
+        server = Server()
+        server.jobs = [
+            _job("job_waiting", status="queued", dispatched_at="2026-11-22T00:00:00Z"),
+            _job("job_pending", status="queued", dispatched_at=""),
+            _job("job_running", status="opening", dispatched_at="2026-11-22T00:00:00Z"),
+        ]
+        requests = []
+        original_handle = server.handle
+
+        async def handle(route):
+            if route.request.url.endswith("/undispatch"):
+                assert route.request.method == "POST"
+                requests.append(route.request.url)
+                server.jobs[0]["dispatched_at"] = ""
+                await route.fulfill(status=200, content_type="application/json", body="{}")
+            else:
+                await original_handle(route)
+
+        server.handle = handle
+        async with async_playwright() as pw:
+            browser = await launch_chromium(pw)
+            try:
+                page = await _open_page(browser, server)
+                await page.evaluate("() => {switchView('jobs');setJobSection('queue')}")
+                row = page.locator("#jobsTable tr[data-job-id='job_waiting']")
+                assert await row.get_by_role("button", name="取消放行", exact=True).is_enabled()
+                assert await page.locator("#jobsTable tr[data-job-id='job_pending']").get_by_role(
+                    "button", name="取消放行", exact=True
+                ).count() == 0
+                await row.get_by_role("button", name="取消放行", exact=True).click()
+                await page.wait_for_function("() => !state.jobs[0].dispatched_at")
+                assert await row.get_by_role("button", name="取消放行", exact=True).count() == 0
+                assert await row.get_by_role("button", name="▶ 进入调度 · 人工发送", exact=True).is_enabled()
+                server.jobs[0]["dispatched_at"] = "2026-11-22T00:00:00Z"
+                await page.evaluate("() => refreshAll()")
+                await page.evaluate("() => {state.selectedJobIds=new Set(state.jobs.map(j=>j.id));syncJobBulkControls()}")
+                bulk = page.locator('[data-bulk-action="undispatch"]')
+                assert await bulk.locator(".bulk-n").inner_text() == "1"
+                await bulk.click()
+                await page.wait_for_function("() => !state.bulkJobAction && !state.jobs[0].dispatched_at")
+                assert len(requests) == 2
+                assert all("/job_waiting/undispatch" in url for url in requests)
+            finally:
+                await browser.close()
+
+    asyncio.run(run())
+
+
 def test_incremental_refresh_handles_added_and_removed_rows():
     """任务增减时增量刷新即可，不依赖整表重绘。"""
 
@@ -634,7 +684,7 @@ def test_row_signature_covers_every_rendered_field():
     fields = set(re.findall(r"j\.(\w+)", signature))
     # 这些字段会直接改变行的可见内容或按钮可用状态。
     must_have = {
-        "id", "status", "archived", "archived_at", "account_id", "video_path",
+        "id", "status", "dispatched_at", "archived", "archived_at", "account_id", "video_path",
         "submit_mode", "task_name", "has_task_page", "web_page_url",
         "session_url", "session_id", "result_card_index",
         "recall_state", "can_push_result", "result_pushed_at",

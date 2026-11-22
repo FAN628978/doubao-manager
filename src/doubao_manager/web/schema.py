@@ -160,6 +160,8 @@ def ensure_schema(db) -> None:
             # 交给调度器的时刻：排队任务在拿到名额前状态仍是 queued，靠它区分
             # “还没人工放行”和“已放行、正在等名额/账号”（见 start_worker）。
             ("dispatched_at", "TEXT DEFAULT ''"),
+            # 显式撤回放行后，旧版自动任务恢复逻辑也必须等待再次放行。
+            ("dispatch_revoked", "INTEGER DEFAULT 0"),
             # 手动点击“下一个任务”可超出全局处理上限，重派时保留此授权。
             ("bypass_processing_limit", "INTEGER DEFAULT 0"),
             # Opaque identity injected into the exact task tab for the Chrome extension.
