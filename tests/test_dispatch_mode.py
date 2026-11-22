@@ -571,6 +571,87 @@ def test_queued_auto_job_without_account_resumes_after_restart(bridge, tmp_path)
         assert state["account_id"] == "account_1"
 
 
+def test_restart_auto_waits_for_processing_slot_before_allocating_account(bridge, tmp_path):
+    with application.db() as conn:
+        conn.execute(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            ("account_2", "账号二", "", str(tmp_path / "p2"), "2026-01-02"),
+        )
+    with bridge["session"]() as client:
+        _set_mode(client, "manual")
+        _set_auto_dispatch(client, False)
+        client.put("/api/settings/processing-limit", json={"processing_limit": 1})
+        blocker = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_2", "prompt": "占住名额", "duration": 4,
+            "auto_start": True,
+        }).json()
+        assert _wait_status(client, blocker["id"], set(web_api.ACTIVE))["status"] in web_api.ACTIVE
+        job = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "换号后自动分配", "duration": 4,
+        }).json()
+
+        response = client.post(f"/api/v1/videos/generations/{job['id']}/restart-auto")
+        assert response.status_code == 200, response.text
+        state = client.get(f"/api/v1/videos/generations/{job['id']}").json()
+        assert state["status"] == "queued"
+        assert state["account_id"] is None
+        assert state["web"]["submit_mode"] == "auto"
+        assert state["web"]["dispatched_at"]
+        with application.db() as conn:
+            assert web_api.quota_summary(conn, "account_1")["reserved_seconds"] == 0
+
+        assert client.post(
+            f"/api/v1/videos/generations/{blocker['id']}/cancel?confirm_cancel=true"
+        ).status_code == 200
+        state = _wait_status(client, job["id"], set(web_api.ACTIVE))
+        assert state["status"] in web_api.ACTIVE
+        assert state["account_id"] == "account_2"
+        assert bridge["started"] == ["manual", "auto"]
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["redispatch", "resume"])
+def test_restart_auto_keeps_automatic_allocation_after_deferral(bridge, tmp_path, resume):
+    with application.db() as conn:
+        conn.execute(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            ("account_2", "账号二", "", str(tmp_path / "p2"), "2026-01-02"),
+        )
+    with bridge["session"]() as client:
+        _set_mode(client, "manual")
+        _set_auto_dispatch(client, False)
+        job = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "暂不可分配时自动重试", "duration": 4,
+        }).json()
+        with application.db() as conn:
+            conn.execute("UPDATE accounts SET paused=1")
+        response = client.post(f"/api/v1/videos/generations/{job['id']}/restart-auto")
+        assert response.status_code == 200, response.text
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            state = client.get(f"/api/v1/videos/generations/{job['id']}").json()
+            if state["web"]["next_retry_at"]:
+                break
+            time.sleep(0.01)
+        assert state["web"]["next_retry_at"]
+        assert state["status"] == "queued"
+        assert state["account_id"] is None
+        assert state["web"]["submit_mode"] == "auto"
+        assert bridge["started"] == []
+
+        with application.db() as conn:
+            conn.execute("UPDATE accounts SET paused=0")
+            conn.execute("UPDATE video_web_jobs SET next_retry_at='' WHERE job_id=?", (job["id"],))
+
+        async def redispatch():
+            return client.app.state.video_redispatch()
+
+        assert (_resume_in_loop(client) if resume else client.portal.call(redispatch)) == 1
+        state = _wait_status(client, job["id"], set(web_api.ACTIVE))
+        assert state["status"] in web_api.ACTIVE
+        assert state["account_id"] == "account_2"
+        assert bridge["started"] == ["auto"]
+
+
 def test_manual_job_is_not_resumed_after_restart(bridge, tmp_path):
     """重启恢复不能替人工任务放行。"""
     with bridge["session"]() as client:

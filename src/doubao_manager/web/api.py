@@ -2460,7 +2460,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 jobid, rematch_account=True, allow_unfinished=True
             )
             req.submit_mode = "auto"
-            start_worker(jobid, req, previous_account_id or avoid_account_for(jobid))
+            avoid_account_id = previous_account_id or avoid_account_for(jobid)
+            with db() as c:
+                c.execute(
+                    "UPDATE video_web_jobs SET submit_mode='auto',avoid_account_id=? "
+                    "WHERE job_id=?",
+                    (avoid_account_id, jobid),
+                )
+            start_worker(jobid, req, avoid_account_id)
             return detail(jobid)
 
     @app.post("/api/v1/videos/generations/{jobid}/reset",tags=["Doubao Web Video"])
