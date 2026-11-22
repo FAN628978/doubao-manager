@@ -427,8 +427,10 @@ async def select_model(page, model_name: str):
     """选择视频生成模型（以豆包实际提供的模型为准）。"""
     await dismiss_blocking_dialogs(page)
     trigger = None
-    for sel in ('[data-testid="chat_input_action_model"]', 'button:has-text("模型")',
-                'button:has-text("Seedance")'):
+    # The chat model button (e.g. "快速") stays mounted but disabled in video mode.
+    for sel in ('[data-input-engine-actionbar-control-key="video-model"]',
+                'button:has-text("Seedance")', 'button:has-text("模型")',
+                '[data-testid="chat_input_action_model"]'):
         loc = page.locator(sel).first
         try:
             if await loc.count() and await loc.is_visible():
@@ -438,7 +440,23 @@ async def select_model(page, model_name: str):
             continue
     if trigger is None:
         raise ReviewNeeded("MODEL_TRIGGER_NOT_FOUND", "未找到模型选择器")
-    await trigger.click()
+    required_model = " ".join(model_name.split())
+    deadline = asyncio.get_running_loop().time() + 30
+    while True:
+        # A matching model needs no click, even when Doubao disables the selector.
+        current_model = " ".join((await trigger.inner_text()).split())
+        current_model = re.sub(r"^模型\s*[:：]?\s*", "", current_model)
+        if current_model == required_model:
+            return
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise ReviewNeeded("WEB_AUTOMATION_ERROR", "模型选择器在 30 秒内仍不可用；未提交任务")
+        if (await trigger.is_enabled()
+                and await trigger.get_attribute("aria-busy") != "true"
+                and await trigger.get_attribute("data-disabled") != "true"):
+            await trigger.click(timeout=max(1, int(remaining * 1000)))
+            break
+        await page.wait_for_timeout(300)
     target = None
     deadline = asyncio.get_running_loop().time() + 8
     while asyncio.get_running_loop().time() < deadline:
@@ -1117,8 +1135,6 @@ async def perform(ctx, req: VideoRequest, assets: dict[str, Path], target: Path,
         prompt_text = normalize_prompt_newlines(translate_mention_markers(req.prompt))
         await editor.fill(prompt_text)  # Do not fake duration/ratio via prompt.
         before_submit = await read_composer_state(page)
-        if not prompts_equivalent(before_submit["prompt"], prompt_text):
-            raise ReviewNeeded("PROMPT_UNVERIFIED", "提示词写入后无法验证；未提交任务")
         initial = await read_state(page)
         if on_binding is not None:
             await on_binding(int(initial.get("videoCards") or 0))

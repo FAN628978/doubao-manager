@@ -1317,7 +1317,7 @@ def test_task_settings_modal_body_scrolls_on_short_viewport():
     asyncio.run(run())
 
 
-def test_global_quota_override_is_saved_from_task_settings():
+def test_task_settings_show_fixed_largest_remainder_selection():
     async def run():
         server = Server()
         server.accounts = [
@@ -1354,17 +1354,14 @@ def test_global_quota_override_is_saved_from_task_settings():
             try:
                 page = await _open_page(browser, server)
                 await page.evaluate("() => openSubmitModeSettings()")
-                assert not await page.is_checked("#ignoreQuotaSettingToggle")
-                await page.click("#ignoreQuotaSettingToggle")
-                assert await page.evaluate("() => state.settingIgnoreQuota") is True
-                assert await page.is_checked("#ignoreQuotaSettingToggle")
-                assert "已开启" in await page.inner_text("#ignoreQuotaSettingState")
+                assert await page.locator("#ignoreQuotaSettingToggle").count() == 0
+                assert "选择剩余额度最大的账号" in await page.inner_text("#submitModeModal")
+                assert "不判断本地额度是否足够" in await page.inner_text("#submitModeModal")
                 await page.evaluate("() => $('submitModeForm').requestSubmit()")
                 await page.wait_for_function(
                     "() => !document.getElementById('submitModeModal').classList.contains('show')"
                 )
-                assert server.ignore_quota_updates == [True]
-                assert await page.evaluate("() => state.ignoreQuotaCheck") is True
+                assert server.ignore_quota_updates == []
                 await page.evaluate("() => openModal('webModal')")
                 # 新任务默认保持“进入处理前自动分配”；最大剩余额度选择由
                 # 后端在真正执行时完成，操作者也可以手动选定账号。
@@ -1375,7 +1372,7 @@ def test_global_quota_override_is_saved_from_task_settings():
                 await page.evaluate("() => closeModal('webModal')")
 
                 await page.evaluate("() => openSubmitModeSettings()")
-                assert await page.is_checked("#ignoreQuotaSettingToggle")
+                assert await page.locator("#ignoreQuotaSettingToggle").count() == 0
             finally:
                 await browser.close()
 

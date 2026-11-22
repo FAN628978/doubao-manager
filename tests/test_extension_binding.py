@@ -191,7 +191,8 @@ def test_extension_actions_call_existing_task_apis():
     assert "taskActions[message.action]" in background
     assert "当前扩展版本不支持任务操作" in background
     assert "任务 ID 缺失" in background
-    assert '["next_task", "exhaust_quota"].includes(action) ? "dispatch" : action' in content
+    assert 'action === "exhaust_quota" ? "dispatch" : action' in content
+    assert 'task.next_task_job_id' not in content
     assert '`__exhaust_quota__${task.job_id}`' in content
 
 

@@ -91,6 +91,48 @@ def bridge(tmp_path, monkeypatch):
     }
 
 
+@pytest.mark.parametrize("remaining", [0, 2, 30])
+@pytest.mark.parametrize("legacy_override", [False, True])
+def test_restart_selects_maximum_quota_without_priority_or_original_account_penalty(
+    bridge, tmp_path, remaining, legacy_override
+):
+    with bridge["client"] as client:
+        with application.db() as conn:
+            conn.execute(
+                "INSERT INTO accounts(id,name,note,profile_dir,created_at,priority) "
+                "VALUES('account_2','second','',?,'2026-01-02T00:00:00+00:00',1000)",
+                (str(tmp_path / "p2"),),
+            )
+            conn.executemany(
+                "INSERT INTO account_quota(account_id,day,reserved_seconds,consumed_seconds) "
+                "VALUES(?,?,0,?)",
+                [("account_1", web_api.local_day(), 30 - remaining),
+                 ("account_2", web_api.local_day(), 30)],
+            )
+        setting = client.put(
+            "/api/settings/ignore-quota-check",
+            json={"ignore_quota_check": legacy_override},
+        )
+        assert setting.status_code == 200, setting.text
+        created = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "choose maximum remaining quota",
+            "duration": 4, "auto_start": False,
+        })
+        assert created.status_code == 202, created.text
+        job_id = created.json()["id"]
+        with application.db() as conn:
+            conn.execute("UPDATE jobs SET status='needs_review' WHERE id=?", (job_id,))
+        restarted = client.post(f"/api/v1/videos/generations/{job_id}/restart-auto")
+        assert restarted.status_code == 200, restarted.text
+        state = _wait_status(client, job_id, set(web_api.ACTIVE))
+        assert state["account_id"] == "account_1", state
+        assert state["web"]["quota_state"] == "reserved", state
+        with application.db() as conn:
+            quota = web_api.quota_summary(conn, "account_1")
+        assert quota["consumed_seconds"] == 30 - remaining
+        assert quota["reserved_seconds"] == 4
+
+
 def _resume_in_loop(client):
     """像 lifespan 那样在有事件循环处调用启动恢复（否则 create_task 会静默失败）。"""
     async def _call():
@@ -205,7 +247,191 @@ def test_dispatch_next_starts_oldest_other_pending_job(bridge):
         assert not untouched["web"]["dispatched_at"]
         assert started["status"] in web_api.ACTIVE
         assert started["account_id"] == "account_1"
-        assert started["web"]["submit_mode"] == "manual"
+        assert started["web"]["submit_mode"] == "auto"
+        assert bridge["started"] == ["auto"]
+        assert untouched["web"]["submit_mode"] == "manual"
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+def test_dispatch_next_bypasses_full_limit_and_ordinary_waiters(bridge, tmp_path, mode):
+    with application.db() as conn:
+        conn.executemany(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            [(f"account_{i}", f"账号{i}", "", str(tmp_path / f"p{i}"), f"2026-01-0{i}")
+             for i in (2, 3)],
+        )
+    with bridge["session"]() as client:
+        _set_mode(client, mode)
+        _set_auto_dispatch(client, False)
+        client.put("/api/settings/processing-limit", json={"processing_limit": 1})
+        current = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "当前任务", "auto_start": True,
+        }).json()
+        assert _wait_status(client, current["id"], set(web_api.ACTIVE))["status"] in web_api.ACTIVE
+        ordinary = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_2", "prompt": "普通调度仍等名额",
+        }).json()
+        assert client.post(
+            f"/api/v1/videos/generations/{ordinary['id']}/dispatch"
+        ).status_code == 200
+        next_job = client.post("/api/v1/videos/generations", json={
+            "prompt": "手动下一个自动分配账号",
+        }).json()
+        response = client.post(f"/api/v1/videos/generations/{current['id']}/dispatch-next")
+        assert response.status_code == 200, response.text
+        assert response.json()["job_id"] == ordinary["id"]
+        state = _wait_status(client, ordinary["id"], set(web_api.ACTIVE))
+        assert state["status"] in web_api.ACTIVE
+        assert state["account_id"] == "account_2"
+        assert bridge["started"] == [mode, "auto"]
+        assert state["web"]["submit_mode"] == "auto"
+        assert client.get(
+            f"/api/v1/videos/generations/{next_job['id']}"
+        ).json()["status"] == "queued"
+        queue = client.get("/api/v1/videos/queue/status").json()
+        assert queue["processing"] == 2
+        assert queue["processing_limit"] == 1
+
+
+def test_next_button_promotes_auto_dispatched_workers_at_full_limit(bridge, tmp_path):
+    with application.db() as conn:
+        conn.executemany(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            [(f"account_{i}", f"账号{i}", "", str(tmp_path / f"p{i}"), f"2026-01-0{i}")
+             for i in (2, 3)],
+        )
+    with bridge["session"]() as client:
+        _set_mode(client, "auto")
+        _set_auto_dispatch(client, True)
+        client.put("/api/settings/processing-limit", json={"processing_limit": 1})
+        current = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "已满并发",
+        }).json()
+        assert _wait_status(client, current["id"], set(web_api.ACTIVE))["status"] in web_api.ACTIVE
+        token = "full-limit-task-binding-" + "a" * 32
+        with application.db() as conn:
+            conn.execute(
+                "UPDATE video_web_jobs SET extension_binding_token=? WHERE job_id=?",
+                (token, current["id"]),
+            )
+        for i in (2, 3):
+            waiting = client.post("/api/v1/videos/generations", json={
+                "account_id": f"account_{i}", "prompt": f"已自动放行但等待名额{i}",
+            }).json()
+            worker = client.app.state.video_pending[waiting["id"]]
+            state = client.get(f"/api/v1/videos/generations/{waiting['id']}").json()
+            assert state["status"] == "queued"
+            assert state["web"]["dispatched_at"]
+            resolved = client.get(
+                "/api/v1/extension/tasks/resolve", params={"binding_token": token}
+            ).json()
+            control = next(c for c in resolved["manual_controls"] if c["key"] == "next_task")
+            assert control["enabled"] is True
+            assert resolved["next_task_job_id"] == waiting["id"]
+            response = client.post(f"/api/v1/videos/generations/{current['id']}/dispatch-next")
+            assert response.status_code == 200, response.text
+            assert response.json()["job_id"] == waiting["id"]
+            state = _wait_status(client, waiting["id"], set(web_api.ACTIVE))
+            assert state["status"] in web_api.ACTIVE
+            assert client.app.state.video_pending[waiting["id"]] is worker
+            assert client.get("/api/v1/videos/queue/status").json()["processing"] == i
+        assert bridge["execution_accounts"] == ["account_1", "account_2", "account_3"]
+
+
+def test_dispatch_next_waits_for_same_account_then_bypasses_limit(bridge, tmp_path):
+    with application.db() as conn:
+        conn.execute(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            ("account_2", "账号二", "", str(tmp_path / "p2"), "2026-01-02"),
+        )
+    with bridge["session"]() as client:
+        _set_mode(client, "auto")
+        _set_auto_dispatch(client, False)
+        client.put("/api/settings/processing-limit", json={"processing_limit": 1})
+        current = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "当前任务", "auto_start": True,
+        }).json()
+        assert _wait_status(client, current["id"], set(web_api.ACTIVE))["status"] in web_api.ACTIVE
+        waiting = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "同账号等待",
+        }).json()
+        assert client.post(
+            f"/api/v1/videos/generations/{current['id']}/dispatch-next"
+        ).json()["job_id"] == waiting["id"]
+        assert client.get(
+            f"/api/v1/videos/generations/{waiting['id']}"
+        ).json()["status"] == "queued"
+        assert bridge["started"] == ["auto"]
+        other = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_2", "prompt": "另一账号手动超出上限",
+        }).json()
+        assert client.post(
+            f"/api/v1/videos/generations/{current['id']}/dispatch-next"
+        ).json()["job_id"] == other["id"]
+        assert _wait_status(client, other["id"], set(web_api.ACTIVE))["status"] in web_api.ACTIVE
+        assert client.post(
+            f"/api/v1/videos/generations/{current['id']}/cancel?confirm_cancel=true"
+        ).status_code == 200
+        state = _wait_status(client, waiting["id"], set(web_api.ACTIVE))
+        assert state["status"] in web_api.ACTIVE
+        assert state["account_id"] == "account_1"
+        assert client.get("/api/v1/videos/queue/status").json()["processing"] == 2
+
+
+@pytest.mark.parametrize("resume", [False, True], ids=["redispatch", "resume"])
+def test_dispatch_next_keeps_bypass_after_allocation_deferral(bridge, tmp_path, resume):
+    with application.db() as conn:
+        conn.execute(
+            "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
+            ("account_2", "账号二", "", str(tmp_path / "p2"), "2026-01-02"),
+        )
+    with bridge["session"]() as client:
+        _set_mode(client, "manual")
+        _set_auto_dispatch(client, False)
+        client.put("/api/settings/processing-limit", json={"processing_limit": 1})
+        current = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "当前任务", "auto_start": True,
+        }).json()
+        assert _wait_status(client, current["id"], set(web_api.ACTIVE))["status"] in web_api.ACTIVE
+        next_job = client.post("/api/v1/videos/generations", json={"prompt": "稍后自动重派"}).json()
+        with application.db() as conn:
+            conn.execute("UPDATE accounts SET paused=1")
+        response = client.post(f"/api/v1/videos/generations/{current['id']}/dispatch-next")
+        assert response.status_code == 200, response.text
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            state = client.get(f"/api/v1/videos/generations/{next_job['id']}").json()
+            if state["web"]["next_retry_at"]:
+                break
+            time.sleep(0.01)
+        assert state["web"]["next_retry_at"]
+        assert state["account_id"] is None
+        assert state["web"]["submit_mode"] == "auto"
+        with application.db() as conn:
+            conn.execute("UPDATE accounts SET paused=0")
+            conn.execute("UPDATE video_web_jobs SET next_retry_at='' WHERE job_id=?", (next_job["id"],))
+
+        async def redispatch():
+            return client.app.state.video_redispatch()
+
+        assert (_resume_in_loop(client) if resume else client.portal.call(redispatch)) == 1
+        state = _wait_status(client, next_job["id"], set(web_api.ACTIVE))
+        assert state["status"] in web_api.ACTIVE
+        assert state["account_id"] == "account_2"
+        assert state["web"]["submit_mode"] == "auto"
+        assert bridge["started"] == ["manual", "auto"]
+        assert client.get("/api/v1/videos/queue/status").json()["processing"] == 2
+        assert client.post(
+            f"/api/v1/videos/generations/{next_job['id']}/cancel?confirm_cancel=true"
+        ).status_code == 200
+        assert client.post(
+            f"/api/v1/videos/generations/{next_job['id']}/reset?confirm_reset=true"
+        ).status_code == 200
+        with application.db() as conn:
+            assert conn.execute(
+                "SELECT bypass_processing_limit FROM video_web_jobs WHERE job_id=?",
+                (next_job["id"],),
+            ).fetchone()[0] == 0
 
 
 def test_setting_default_is_manual_and_persists(bridge):
@@ -374,7 +600,7 @@ def test_worker_failure_stays_for_human_review_with_legacy_claude_setting(bridge
         assert bridge["execution_accounts"] == ["account_1"]
 
 
-def test_worker_exception_switches_account_and_restarts_once(bridge, tmp_path):
+def test_worker_exception_reselects_largest_quota_account_and_restarts_once(bridge, tmp_path):
     with application.db() as conn:
         conn.execute(
             "INSERT INTO accounts(id,name,note,profile_dir,created_at) VALUES(?,?,?,?,?)",
@@ -413,9 +639,9 @@ def test_worker_exception_switches_account_and_restarts_once(bridge, tmp_path):
             f"/api/v1/videos/generations/{created.json()['id']}"
         ).json()
 
-        assert bridge["execution_accounts"][:2] == ["account_1", "account_2"]
+        assert bridge["execution_accounts"][:2] == ["account_1", "account_1"]
         assert bridge["started"][:2] == ["auto", "auto"]
-        assert state["account_id"] == "account_2"
+        assert state["account_id"] == "account_1"
         assert state["status"] in web_api.ACTIVE
         assert state["web"]["submit_mode"] == "auto"
 
@@ -563,6 +789,28 @@ def test_queued_auto_job_without_account_resumes_after_restart(bridge, tmp_path)
     web_api.recover_interrupted_jobs(application.db, base_dir=tmp_path)
     with bridge["session"]() as client:
         assert _resume_in_loop(client) >= 1
+        # The interrupted blocker now needs review and still owns its account.
+        # Recovery must leave this task unassigned until the operator ends it.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            state = client.get(f"/api/v1/videos/generations/{probe['id']}").json()
+            if state["web"]["next_retry_at"]:
+                break
+            time.sleep(0.01)
+        assert state["web"]["next_retry_at"]
+        assert state["status"] == "queued"
+        assert state["account_id"] is None
+        assert state["web"]["quota_state"] == ""
+        assert client.post(
+            f"/api/v1/videos/generations/{blocker['id']}/cancel?confirm_cancel=true"
+        ).status_code == 200
+        with application.db() as conn:
+            conn.execute("UPDATE video_web_jobs SET next_retry_at='' WHERE job_id=?", (probe["id"],))
+
+        async def redispatch():
+            return client.app.state.video_redispatch()
+
+        assert client.portal.call(redispatch) == 1
         state = _wait_status(client, probe["id"], set(web_api.ACTIVE))
         events = client.get(
             f"/api/v1/videos/generations/{probe['id']}/events"
@@ -605,7 +853,7 @@ def test_restart_auto_waits_for_processing_slot_before_allocating_account(bridge
         ).status_code == 200
         state = _wait_status(client, job["id"], set(web_api.ACTIVE))
         assert state["status"] in web_api.ACTIVE
-        assert state["account_id"] == "account_2"
+        assert state["account_id"] == "account_1"
         assert bridge["started"] == ["manual", "auto"]
 
 
@@ -648,8 +896,97 @@ def test_restart_auto_keeps_automatic_allocation_after_deferral(bridge, tmp_path
         assert (_resume_in_loop(client) if resume else client.portal.call(redispatch)) == 1
         state = _wait_status(client, job["id"], set(web_api.ACTIVE))
         assert state["status"] in web_api.ACTIVE
-        assert state["account_id"] == "account_2"
+        assert state["account_id"] == "account_1"
         assert bridge["started"] == ["auto"]
+
+
+@pytest.mark.parametrize("occupied_status", [
+    "opening", "generating", "awaiting_manual_send", "needs_review",
+])
+def test_automatic_queue_never_binds_or_reserves_busy_accounts(bridge, occupied_status):
+    with bridge["session"]() as client:
+        _set_mode(client, "auto")
+        _set_auto_dispatch(client, False)
+        client.put("/api/settings/processing-limit", json={"processing_limit": 0})
+        occupied = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "账号已有任务", "duration": 4,
+        }).json()
+        # Persisted ownership must count even without a live worker/account lock.
+        with application.db() as conn:
+            conn.execute("UPDATE jobs SET status=? WHERE id=?", (occupied_status, occupied["id"]))
+        waiting = client.post("/api/v1/videos/generations", json={
+            "prompt": "等空闲账号再分配", "duration": 4,
+        }).json()
+        assert waiting["account_id"] is None
+        assert waiting["web"]["quota_state"] == ""
+        assert not waiting["web"]["dispatched_at"]
+        response = client.post(f"/api/v1/videos/generations/{waiting['id']}/dispatch")
+        assert response.status_code == 200, response.text
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            state = client.get(f"/api/v1/videos/generations/{waiting['id']}").json()
+            if state["web"]["next_retry_at"]:
+                break
+            time.sleep(0.01)
+        assert state["web"]["next_retry_at"]
+        assert state["status"] == "queued"
+        assert state["account_id"] is None
+        assert state["web"]["quota_state"] == ""
+        assert bridge["started"] == []
+        with application.db() as conn:
+            assert web_api.quota_summary(conn, "account_1")["reserved_seconds"] == 4
+        assert client.post(
+            f"/api/v1/videos/generations/{occupied['id']}/cancel?confirm_cancel=true"
+        ).status_code == 200
+        with application.db() as conn:
+            conn.execute("UPDATE video_web_jobs SET next_retry_at='' WHERE job_id=?", (waiting["id"],))
+
+        async def redispatch():
+            return client.app.state.video_redispatch()
+
+        assert client.portal.call(redispatch) == 1
+        state = _wait_status(client, waiting["id"], set(web_api.ACTIVE))
+        assert state["status"] in web_api.ACTIVE
+        assert state["account_id"] == "account_1"
+        assert bridge["started"] == ["auto"]
+
+
+@pytest.mark.parametrize("manual_selection", [False, True])
+def test_resume_releases_only_old_automatic_queue_bindings(bridge, manual_selection):
+    with bridge["session"]() as client:
+        _set_mode(client, "auto")
+        _set_auto_dispatch(client, False)
+        client.put("/api/settings/processing-limit", json={"processing_limit": 1})
+        blocker = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "占住处理名额", "duration": 4,
+            "auto_start": True,
+        }).json()
+        assert _wait_status(client, blocker["id"], set(web_api.ACTIVE))["status"] in web_api.ACTIVE
+        waiting = client.post("/api/v1/videos/generations", json={
+            "account_id": "account_1", "prompt": "旧版提前分配", "duration": 4,
+        }).json()
+        with application.db() as conn:
+            conn.execute(
+                "UPDATE video_web_jobs SET dispatched_at=? WHERE job_id=?",
+                (web_api.ts(), waiting["id"]),
+            )
+            conn.execute(
+                "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
+                (waiting["id"], "queued", "进入处理前分配账号 account_1，并预占 4 秒额度", web_api.ts()),
+            )
+        if manual_selection:
+            assert client.post(
+                f"/api/jobs/{waiting['id']}/account", json={"account_id": "account_1"}
+            ).status_code == 200
+        assert _resume_in_loop(client) == 1
+        state = client.get(f"/api/v1/videos/generations/{waiting['id']}").json()
+        assert state["status"] == "queued"
+        assert state["account_id"] == ("account_1" if manual_selection else None)
+        assert state["web"]["quota_state"] == ("reserved" if manual_selection else "")
+        with application.db() as conn:
+            assert web_api.quota_summary(conn, "account_1")["reserved_seconds"] == (
+                8 if manual_selection else 4
+            )
 
 
 def test_manual_job_is_not_resumed_after_restart(bridge, tmp_path):

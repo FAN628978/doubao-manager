@@ -377,7 +377,7 @@ def test_member_account_priority_and_forced_model(tmp_path, monkeypatch):
         })
         assert created.status_code == 202, created.text
         body = created.json()
-        # 待处理任务不分配账号；进入处理前才选出优先级的会员账号并强制使用会员模型。
+        # 待处理任务不分配账号；执行时只按余额选择，余额相同按创建顺序。
         assert body['account_id'] is None
         started = client.post(f"/api/v1/videos/generations/{body['id']}/start")
         assert started.status_code == 200, started.text
@@ -388,7 +388,7 @@ def test_member_account_priority_and_forced_model(tmp_path, monkeypatch):
             if body['account_id']:
                 break
             time.sleep(0.01)
-        assert body['account_id'] == member['id']
+        assert body['account_id'] == normal['id']
         assert body['web']['model'] == 'Seedance 2.0 Fast'
 
         updated = client.patch(f"/api/accounts/{normal['id']}", json={

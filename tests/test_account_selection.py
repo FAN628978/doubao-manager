@@ -3,6 +3,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -18,8 +19,8 @@ def test_pending_job_gets_account_only_when_it_starts(tmp_path, monkeypatch):
     monkeypatch.setattr(application, "DB_PATH", tmp_path / "pending-account.sqlite3")
 
     with TestClient(application.app) as client:
-        exact = client.post("/api/accounts", json={"name": "刚好够用", "priority": 0}).json()
-        larger = client.post("/api/accounts", json={"name": "额度较多", "priority": 100}).json()
+        exact = client.post("/api/accounts", json={"name": "刚好够用", "priority": 100}).json()
+        larger = client.post("/api/accounts", json={"name": "额度较多", "priority": 0}).json()
 
         with application.db() as conn:
             conn.execute(
@@ -62,12 +63,11 @@ def test_pending_job_gets_account_only_when_it_starts(tmp_path, monkeypatch):
             return state
 
         state = wait_assigned(job["id"])
-        # 优先填满“刚好够用”的账号。
-        assert state["account_id"] == exact["id"], state
+        # 只按余额选择，不采用刚好够用或优先级规则。
+        assert state["account_id"] == larger["id"], state
         assert state["web"]["quota_state"] == "reserved", state
 
-        # 第一个任务在测试里拿不到真实浏览器，会一直卡在“正在处理”占着 exact 的账号锁；
-        # 直接删掉它释放账号锁，再用“额度已用尽”验证第二个任务会切到其他账号。
+        # 删除首个任务释放账号锁，再验证第二个任务仍按最大余额选择。
         with application.db() as conn:
             conn.execute(
                 "UPDATE account_quota SET consumed_seconds=30, reserved_seconds=0 WHERE account_id=?",
@@ -117,7 +117,7 @@ def test_pending_job_cannot_be_forced_onto_an_account_at_creation(tmp_path, monk
         assert job["web"]["quota_state"] == "reserved"
 
 
-def test_global_quota_override_is_persisted_and_reserves_overage(tmp_path, monkeypatch):
+def test_legacy_quota_override_is_persisted_without_blocking_overage(tmp_path, monkeypatch):
     monkeypatch.setattr(application, "DB_PATH", tmp_path / "quota-override.sqlite3")
 
     with TestClient(application.app) as client:
@@ -138,8 +138,8 @@ def test_global_quota_override_is_persisted_and_reserves_overage(tmp_path, monke
             "duration": 4,
             "auto_start": False,
         }
-        rejected = client.post("/api/v1/videos/generations", json=payload)
-        assert rejected.status_code == 409, rejected.text
+        accepted = client.post("/api/v1/videos/generations", json=payload)
+        assert accepted.status_code == 202, accepted.text
 
         updated = client.put(
             "/api/settings/ignore-quota-check",
@@ -164,12 +164,13 @@ def test_global_quota_override_is_persisted_and_reserves_overage(tmp_path, monke
                 "WHERE account_id=? AND day=?",
                 (account["id"], _day()),
             ).fetchone()
-        assert quota["reserved_seconds"] == 4
+        assert quota["reserved_seconds"] == 8
         assert quota["consumed_seconds"] == 30
 
 
-def test_global_quota_override_auto_dispatch_uses_largest_remainder(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("legacy_override", [False, True])
+def test_auto_dispatch_uses_largest_remainder_even_when_insufficient(
+    tmp_path, monkeypatch, legacy_override
 ):
     monkeypatch.setattr(application, "DB_PATH", tmp_path / "auto-quota-override.sqlite3")
 
@@ -193,7 +194,7 @@ def test_global_quota_override_auto_dispatch_uses_largest_remainder(
 
         updated = client.put(
             "/api/settings/ignore-quota-check",
-            json={"ignore_quota_check": True},
+            json={"ignore_quota_check": legacy_override},
         )
         assert updated.status_code == 200, updated.text
 

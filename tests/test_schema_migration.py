@@ -51,6 +51,7 @@ def test_schema_migrates_delivery_columns_before_creating_index(tmp_path):
             "delivery_error",
             "session_url",
             "session_id",
+            "bypass_processing_limit",
         } <= columns
 
         delivery = conn.execute(
@@ -66,6 +67,9 @@ def test_schema_migrates_delivery_columns_before_creating_index(tmp_path):
         ).fetchone()
         assert session["session_url"] == "https://www.doubao.com/chat/38449850653386498"
         assert session["session_id"] == "38449850653386498"
+        assert conn.execute(
+            "SELECT bypass_processing_limit FROM video_web_jobs WHERE job_id='legacy_job'"
+        ).fetchone()[0] == 0
 
         indexes = {
             row["name"] for row in conn.execute("PRAGMA index_list(video_web_jobs)")

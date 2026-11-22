@@ -148,7 +148,7 @@ async def verify_context(playwright, executable: Path, profile: str, api_base: s
             "/api/v1/videos/generations/job-a/push-result",
             "/api/v1/videos/generations/__exhaust_quota__job-a/dispatch",
             "/api/v1/videos/generations/job-a/restart-auto",
-            "/api/v1/videos/generations/job-next/dispatch",
+            "/api/v1/videos/generations/job-a/dispatch-next",
         ]
         for index, action in enumerate(
             ["prepare", "send", "confirm", "download", "push", "exhaust_quota", "restart_auto", "next_task"],
@@ -195,7 +195,7 @@ async def check() -> None:
             "/api/v1/videos/generations/job-a/push-result",
             "/api/v1/videos/generations/__exhaust_quota__job-a/dispatch",
             "/api/v1/videos/generations/job-a/restart-auto",
-            "/api/v1/videos/generations/job-next/dispatch",
+            "/api/v1/videos/generations/job-a/dispatch-next",
         ], "关闭扩展面板不应额外调用任务或浏览器关闭接口"
     finally:
         server.shutdown()

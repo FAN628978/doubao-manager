@@ -100,7 +100,7 @@ def test_auto_restart_after_verification_reuses_original_job(tmp_path, monkeypat
         assert calls == ["auto", "auto"]
 
 
-def test_auto_restart_rematches_to_fresh_account(
+def test_auto_restart_uses_largest_remainder_even_for_original_account(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
@@ -193,18 +193,18 @@ def test_auto_restart_rematches_to_fresh_account(
 
         assert state["id"] == jobid
         assert state["status"] == "downloaded", state
-        assert state["account_id"] == "account_2"
+        assert state["account_id"] == "account_1"
         assert browser_actions[:2] == [
             ("close", "account_1"),
-            ("open", "account_2"),
+            ("open", "account_1"),
         ]
 
     with application.db() as conn:
         old_quota = web_api.quota_summary(conn, "account_1")
         new_quota = web_api.quota_summary(conn, "account_2")
-    assert old_quota["consumed_seconds"] == 0
+    assert old_quota["consumed_seconds"] == 4
     assert old_quota["reserved_seconds"] == 0
-    assert new_quota["consumed_seconds"] == 4
+    assert new_quota["consumed_seconds"] == 0
 
 
 def test_retry_clones_unfinished_job_and_selects_another_account(tmp_path, monkeypatch):
@@ -604,7 +604,7 @@ def test_auto_submission_defaults_to_execution_and_pushes_result(tmp_path, monke
         assert manual.json()["web"]["submit_mode"] == "manual"
 
 
-def test_explicit_account_quota_is_checked_on_create_and_start(tmp_path, monkeypatch):
+def test_explicit_account_allows_insufficient_quota_on_create_and_start(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBAO_TEST_MODE", "1")
     monkeypatch.setattr(application, "DB_PATH", tmp_path / "quota-check.sqlite3")
     application.init_db()
@@ -622,6 +622,13 @@ def test_explicit_account_quota_is_checked_on_create_and_start(tmp_path, monkeyp
         browser_calls.append(account_id)
         return account_id
 
+    async def fake_perform(_ctx, _req, _assets, target, *_args, **_kwargs):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"over-quota-video")
+        return {"output": str(target), "web_page_url": "https://www.doubao.com/chat/over-quota",
+                "video_url": "https://example.com/over-quota.mp4"}
+
+    monkeypatch.setattr(web_api, "perform", fake_perform)
     bridge = FastAPI()
     web_api.mount_video_api(
         bridge, db=application.db, get_account=application.get_account,
@@ -630,12 +637,11 @@ def test_explicit_account_quota_is_checked_on_create_and_start(tmp_path, monkeyp
     )
 
     with TestClient(bridge) as client:
-        rejected = client.post("/api/v1/videos/generations", json={
+        accepted = client.post("/api/v1/videos/generations", json={
             "account_id": "account_1", "prompt": "额度不足", "duration": 6,
             "auto_start": False,
         })
-        assert rejected.status_code == 409
-        assert "需 6 秒，剩余 5 秒" in rejected.json()["detail"]
+        assert accepted.status_code == 202, accepted.text
 
         with application.db() as conn:
             conn.execute("UPDATE account_quota SET reserved_seconds=0 WHERE account_id='account_1'")
@@ -655,7 +661,11 @@ def test_explicit_account_quota_is_checked_on_create_and_start(tmp_path, monkeyp
             )
 
         start = client.post(f"/api/v1/videos/generations/{job_id}/start")
-        assert start.status_code == 409
-        assert "需 4 秒，剩余 3 秒" in start.json()["detail"]
-        assert client.get(f"/api/v1/videos/generations/{job_id}").json()["status"] == "queued"
-        assert browser_calls == []
+        assert start.status_code == 200, start.text
+        for _ in range(150):
+            state = client.get(f"/api/v1/videos/generations/{job_id}").json()
+            if state["status"] == "downloaded":
+                break
+            time.sleep(0.02)
+        assert state["status"] == "downloaded", state
+        assert browser_calls == ["account_1"]

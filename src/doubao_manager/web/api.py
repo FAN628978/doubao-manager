@@ -390,6 +390,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             key=lambda waiting_id: processing_waiters[waiting_id],
         )
 
+    def processing_limit_bypassed(jobid: str) -> bool:
+        with db() as c:
+            row = c.execute(
+                "SELECT bypass_processing_limit FROM video_web_jobs WHERE job_id=?",
+                (jobid,),
+            ).fetchone()
+        return bool(row and row["bypass_processing_limit"])
+
     async def acquire_processing_job(jobid: str) -> None:
         """Give the next global processing slot to the oldest waiting job."""
         nonlocal active_processing
@@ -401,8 +409,10 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 processing_condition.notify_all()
                 try:
                     await processing_condition.wait_for(
-                        lambda: processing_slot_available()
-                        and is_oldest_processing_waiter(jobid)
+                        lambda: processing_limit_bypassed(jobid) or (
+                            processing_slot_available()
+                            and is_oldest_processing_waiter(jobid)
+                        )
                     )
                     processing_job_ids.add(jobid)
                 finally:
@@ -798,11 +808,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     @app.get("/api/settings/ignore-quota-check", tags=["Local Settings"])
     async def get_ignore_quota_check():
+        """Legacy preference retained for compatibility; local quota never blocks execution."""
         ensure_schema()
         return {"ignore_quota_check": local_ignore_quota_check()}
 
     @app.put("/api/settings/ignore-quota-check", tags=["Local Settings"])
     async def update_ignore_quota_check(payload: IgnoreQuotaSetting):
+        """Persist the legacy preference without changing fixed account selection."""
         ensure_schema()
         with db() as c:
             c.execute(
@@ -993,7 +1005,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                             result_push_token=(r["result_push_token"] or None), **a)
 
     def ensure_start_quota(jobid: str, account_id: str) -> None:
-        """Ensure this queued job owns enough quota before its account Chrome opens."""
+        """Record this job's quota reservation before its account Chrome opens."""
         with db() as c:
             w = c.execute(
                 "SELECT duration,quota_day,quota_state FROM video_web_jobs WHERE job_id=?",
@@ -1001,18 +1013,12 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             ).fetchone()
             if not w:
                 raise HTTPException(404, "视频生成任务不存在")
-            quota = quota_summary(c, account_id)
             if quota_held_today(w):
                 return
             duration = int(w["duration"] or 0)
             day = local_day()
             previous_day = w["quota_day"] or ""
             state = w["quota_state"] or ""
-            remaining = quota["remaining_seconds"]
-            if duration > remaining and not local_ignore_quota_check():
-                raise HTTPException(
-                    409, f"账号当日剩余额度不足（需 {duration} 秒，剩余 {remaining} 秒）"
-                )
             if previous_day and previous_day != day:
                 if state in ("", "reserved"):
                     c.execute(
@@ -1278,14 +1284,21 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 try:
                     if not req.account_id:
                         req.account_id = allocate_account(jobid, req, avoid_account_id)
+                        # Auto allocation must claim an idle account before binding
+                        # it or reserving quota. Never queue behind a busy account.
+                        if not await try_acquire_account_slot(jobid, req.account_id):
+                            req.account_id = None
+                            raise HTTPException(409, "账号已被其他任务占用，等待空闲账号")
+                        account_claimed = True
+                        ensure_start_quota(jobid, req.account_id)
                     else:
                         ensure_start_quota(jobid, req.account_id)
                 except HTTPException as exc:
-                    # 没有可用账号/额度：留在自动重试队列里，由 queue tick 稍后
+                    # 没有可用账号：留在自动重试队列里，由 queue tick 稍后
                     # 重派，不再把 dispatched_at 清掉等人来点第二次。
                     defer_job(
                         jobid,
-                        f"暂无可用账号或额度（{exc.detail}），后台自动重试",
+                        f"暂无可用账号（{exc.detail}），后台自动重试",
                     )
                     await release_processing_job(jobid)
                     return
@@ -1308,14 +1321,23 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                     )
                 # 同一账号只允许一个任务进入“正在处理”。如果账号正忙，先归还
                 # 全局处理名额，在待处理状态等账号；拿到账号后再重新申请处理名额。
-                if not await try_acquire_account_slot(jobid, req.account_id):
-                    await release_processing_job(jobid)
-                    await acquire_account_slot(jobid, req.account_id)
-                    await acquire_processing_job(jobid)
-                account_claimed = True
+                if not account_claimed:
+                    if not await try_acquire_account_slot(jobid, req.account_id):
+                        await release_processing_job(jobid)
+                        await acquire_account_slot(jobid, req.account_id)
+                        await acquire_processing_job(jobid)
+                    account_claimed = True
                 # Claim the persisted state last. If another action changed the job
                 # while we waited, back out without starting.
                 with db() as c:
+                    # A queued worker may have been promoted to automatic execution
+                    # by "next task" while waiting for processing/account ownership.
+                    web_row = c.execute(
+                        "SELECT submit_mode,bypass_processing_limit FROM video_web_jobs WHERE job_id=?",
+                        (jobid,),
+                    ).fetchone()
+                    if web_row and web_row["bypass_processing_limit"]:
+                        req.submit_mode = web_row["submit_mode"] or "auto"
                     claimed = c.execute(
                         "UPDATE jobs SET status='opening',updated_at=? "
                         "WHERE id=? AND status='queued'", (ts(), jobid))
@@ -1520,15 +1542,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 raise HTTPException(404, "确认语预设不存在")
         return {"ok": True, "id": preset_id}
 
-    def auto_select_account(required_seconds: int, avoid_account_id: str = "") -> str:
-        """Choose the account with the least capacity left after this task.
-
-        Best-fit allocation reduces stranded seconds on accounts whose remaining
-        quota is only slightly larger than the task duration. Avoided retry accounts
-        stay last; idleness and configured priority break equal-fit ties.
-        When the global quota override is enabled, prefer the greatest remainder.
-        """
-        ignore_quota = local_ignore_quota_check()
+    def auto_select_account() -> str:
+        """Choose the idle account with the greatest remaining quota, even if insufficient."""
         with db() as c:
             rows = c.execute("SELECT * FROM accounts WHERE archived=0 ORDER BY created_at ASC").fetchall()
         active_rows = [row for row in rows if not bool(account_value(row, "paused", 0))]
@@ -1536,46 +1551,27 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             raise HTTPException(409, "没有可用账号，请先创建账号档案并登录豆包")
         if not active_rows:
             raise HTTPException(409, "所有账号均已暂停使用，请先恢复至少一个账号")
-        # account_owners survives a needs_review hand-off (the page stays available
-        # for the operator), so auto-selection must treat it as busy. Otherwise a
-        # new task is assigned to a locked account and waits forever in queued.
-        busy = {get_job(jid)["account_id"] for jid, t in pending.items() if not t.done()}
-        busy.update(account_owners)
+        # A queued account selection is not ownership. Count actual account locks
+        # and persisted processing/review tasks, including after a service restart.
+        busy = set(account_owners)
         with db() as c:
+            placeholders = ",".join("?" for _ in account_holding_statuses)
+            busy.update(row["account_id"] for row in c.execute(
+                f"SELECT DISTINCT account_id FROM jobs WHERE status IN ({placeholders}) "
+                "AND account_id IS NOT NULL",
+                account_holding_statuses,
+            ))
             candidates = []
             for r in active_rows:
                 quota = quota_summary(c, r["id"])
                 remaining = quota["remaining_seconds"]
-                if not quota["manually_exhausted"] and (
-                    ignore_quota or remaining >= required_seconds
-                ):
-                    candidates.append((r["id"], r["created_at"], remaining,
-                                       int(account_value(r, "priority", 0) or 0)))
+                if quota["manually_exhausted"] or r["id"] in busy:
+                    continue
+                candidates.append((r["id"], remaining))
         if candidates:
-            # Availability must outrank best-fit: an account that is already running
-            # another job can only start this one after that job finishes, so picking
-            # it solely because its leftover quota fits better makes the queue look
-            # frozen while other accounts sit idle. Busy accounts stay selectable as a
-            # last resort (all candidates busy) and are then waited on explicitly.
-            if ignore_quota:
-                candidates.sort(key=lambda item: (
-                    item[0] == avoid_account_id,
-                    item[0] in busy,
-                    -item[2],
-                    -item[3],
-                    item[1],
-                ))
-            else:
-                candidates.sort(key=lambda item: (
-                    item[0] == avoid_account_id,
-                    item[0] in busy,
-                    item[2] - required_seconds,
-                    -item[3],
-                    item[2],
-                    item[1],
-                ))
+            candidates.sort(key=lambda item: -item[1])
             return candidates[0][0]
-        raise HTTPException(409, f"所有账号当日视频额度不足（本次需 {required_seconds} 秒，每日上限 {DAILY_VIDEO_SECONDS} 秒）")
+        raise HTTPException(409, "暂无可用账号，正在处理、等待人工复查或已手动清理额度的账号不参与自动分配")
 
     # 供普通（非网页生成）任务在进入处理前分配账号：只需要时长即可挑账号并预占额度。
     def assign_account_for_job(jobid: str) -> Optional[str]:
@@ -1587,7 +1583,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 return row["account_id"]
             if row["status"] not in ("queued", "ready"):
                 return None
-        account_id = auto_select_account(0)
+        account_id = auto_select_account()
         with db() as c:
             c.execute("UPDATE jobs SET account_id=?,updated_at=? WHERE id=?", (account_id, ts(), jobid))
             c.execute("INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
@@ -1642,12 +1638,48 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             ).fetchone()
         return (previous["account_id"] or "") if previous else ""
 
+    def release_queued_auto_account(jobid: str) -> None:
+        """Undo old automatic queue bindings before resuming an orphaned worker.
+
+        Existing events distinguish old auto-allocation from an operator's account
+        selection. Explicit selections and unresolved quota states stay intact.
+        """
+        task = pending.get(jobid)
+        if task is not None and not task.done():
+            return
+        with db() as c:
+            row = c.execute(
+                "SELECT j.status,j.account_id,w.quota_state FROM jobs j "
+                "JOIN video_web_jobs w ON w.job_id=j.id WHERE j.id=?", (jobid,),
+            ).fetchone()
+            if (not row or row["status"] != "queued" or not row["account_id"]
+                    or (row["quota_state"] or "") not in ("", "reserved", "released")):
+                return
+            event = c.execute(
+                "SELECT message FROM video_web_events WHERE job_id=? AND ("
+                "message LIKE '进入处理前分配账号 %' OR "
+                "message LIKE '操作者把账号改为 %' OR "
+                "message LIKE '操作者取消账号%') ORDER BY id DESC LIMIT 1", (jobid,),
+            ).fetchone()
+        if not event or not event["message"].startswith(
+            f"进入处理前分配账号 {row['account_id']}，"
+        ):
+            return
+        release_job_quota_hold(jobid)
+        with db() as c:
+            c.execute("UPDATE jobs SET account_id=NULL,updated_at=? WHERE id=?", (ts(), jobid))
+            c.execute(
+                "UPDATE video_web_jobs SET quota_day='',quota_state='',model='' WHERE job_id=?",
+                (jobid,),
+            )
+            c.execute(
+                "INSERT INTO video_web_events(job_id,status,message,timestamp) VALUES(?,?,?,?)",
+                (jobid, "queued", "已释放排队任务提前自动分配的账号和额度，等待空闲账号", ts()),
+            )
+
     def allocate_account(jobid: str, req: VideoRequest, avoid_account_id: str = "") -> str:
-        """Pick the account for a queued job and reserve its quota right before dispatch."""
-        avoid = avoid_account_id or avoid_account_for(jobid)
-        account_id = auto_select_account(req.duration, avoid)
-        ensure_start_quota(jobid, account_id)
-        return account_id
+        """Pick an idle account; the worker claims it before reserving quota."""
+        return auto_select_account()
 
     # ---- 待处理任务的账号：建单不分配，进入处理前才分配 ----
 
@@ -1818,13 +1850,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         payload = req.model_dump(include={"first_frame_asset_id", "last_frame_asset_id", "reference_asset_ids"}, exclude_none=True)
         try:
             with db() as c:
-                if req.account_id and not local_ignore_quota_check():
-                    remaining = quota_summary(c, req.account_id)["remaining_seconds"]
-                    if req.duration > remaining:
-                        raise HTTPException(
-                            409,
-                            f"账号当日剩余额度不足（需 {req.duration} 秒，剩余 {remaining} 秒）",
-                        )
                 c.execute("INSERT INTO jobs(id,project_id,episode_id,shot_id,prompt,account_id,status,created_at,updated_at)"
                           " VALUES(?,?,?,?,?,?,'queued',?,?)",
                           (jobid, req.project_id, req.episode_id, req.shot_id, req.prompt, req.account_id, stamp, stamp))
@@ -1859,7 +1884,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         emit(jobid, "queued",
              "手动任务已排队：点击“进入调度”后将自动准备并自动发送"
              if req.submit_mode == "manual" else "任务已写入持久化队列")
-        # avoid_account_id 只在本次自动启动时生效：账号真正分配到那一刻才用得上。
+        # 保留旧版来源账号字段用于兼容，自动选号统一按剩余额度排序。
         if req.auto_start: start_worker(jobid, req, avoid_account_id)
         return detail(jobid)
 
@@ -1869,7 +1894,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         return create_generation(req)
 
     def start_worker(
-        jobid, req, avoid_account_id: str = "", auto_switch_allowed: bool = True
+        jobid, req, avoid_account_id: str = "", auto_switch_allowed: bool = True,
+        *, bypass_processing_limit: bool = False,
     ):
         """Admit a queued job to the processing queue.
 
@@ -1877,9 +1903,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         才在 worker 里挑选账号并预占额度（见 worker 中的 allocate_account）。
         """
         # Keep persisted status queued until account and global processing slots are free.
-        # 先挡住重复放行：额度检查会写库（跨天重置），账号检查会取消空闲关窗任务，
-        # 这些副作用必须发生在 409 判定之后，否则被拒绝的请求会带着“额度不足”这类
-        # 误导性原因落地，而真实原因是“已在执行”。
+        # 先挡住重复放行，避免重复请求写入额度预占或取消账号空闲关窗任务。
         task = pending.get(jobid)
         if task is not None and not task.done():
             raise HTTPException(409,"任务已经在等待或执行，拒绝重复提交")
@@ -1910,12 +1934,16 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             row = c.execute("SELECT status FROM jobs WHERE id=?", (jobid,)).fetchone()
             if not row or row["status"] != "queued":
                 raise HTTPException(409,"任务可能已提交或处理中，拒绝重复提交")
-        # 所有 409 都已发生，才落下“已交给调度器”的标记：额度不足这类拒绝
-        # 不该留下一个没有 worker 的已放行假象。
+        # 所有 409 都已发生，才落下“已交给调度器”的标记，避免留下无 worker 的放行记录。
         if req.account_id:
             ensure_start_quota(jobid, req.account_id)
         with db() as c:
             c.execute("UPDATE video_web_jobs SET dispatched_at=? WHERE job_id=?", (ts(), jobid))
+            if bypass_processing_limit:
+                c.execute(
+                    "UPDATE video_web_jobs SET bypass_processing_limit=1,submit_mode=? WHERE job_id=?",
+                    (req.submit_mode or "auto", jobid),
+                )
         pending[jobid] = asyncio.create_task(
             worker(jobid, req, avoid_account_id, auto_switch_allowed)
         )
@@ -2008,14 +2036,14 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         ]
 
     def next_pending_task(exclude_jobid: str = "") -> dict | None:
-        """Return the oldest web task that is still waiting for manual dispatch."""
+        """Include dispatched tasks still waiting for a processing slot."""
         with db() as c:
             row = c.execute(
                 "SELECT j.id,j.account_id,j.project_id,j.episode_id,j.shot_id,"
                 "COALESCE(w.task_name,'') AS task_name "
                 "FROM jobs j JOIN video_web_jobs w ON w.job_id=j.id "
                 "WHERE j.status='queued' AND j.id<>? "
-                "AND COALESCE(w.dispatched_at,'')='' "
+                "AND COALESCE(w.bypass_processing_limit,0)=0 "
                 "ORDER BY j.created_at ASC,j.id ASC LIMIT 1",
                 (exclude_jobid,),
             ).fetchone()
@@ -2087,8 +2115,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "key": "next_task",
             "label": "下一个任务",
             "enabled": next_task is not None,
-            "reason": "" if next_task else "待处理队列中没有未放行任务",
-            "confirm": "确认从待处理队列取出下一个任务并进入调度？将保留该任务原有账号选择。",
+            "reason": "" if next_task else "待处理队列中没有可手动放行的任务",
+            "confirm": "确认自动执行下一个任务？不受并发数量限制，保留原有账号选择；同一账号仍需等待空闲。",
         }])
         return {
             "job_id": item["id"],
@@ -2225,12 +2253,31 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
 
     @app.post("/api/v1/videos/generations/{jobid}/dispatch-next", tags=["Doubao Web Video"])
     async def dispatch_next_job(jobid: str, x_api_key: Optional[str] = Header(None)):
-        """Dispatch the oldest untouched task while preserving its account selection."""
+        """Manually start or promote the oldest queued task beyond the processing limit."""
         auth(x_api_key); ensure_schema(); detail(jobid)
         next_task = next_pending_task(jobid)
         if next_task is None:
-            raise HTTPException(409, "待处理队列中没有未放行任务")
-        started = await dispatch_job(next_task["id"], x_api_key)
+            raise HTTPException(409, "待处理队列中没有可手动放行的任务")
+        next_jobid = next_task["id"]
+        req = assemble_req(next_jobid)
+        resolve_assets(req)
+        if req.account_id and get_account(req.account_id)["archived"]:
+            raise HTTPException(409, "账号已归档")
+        req.submit_mode = "auto"
+        task = pending.get(next_jobid)
+        if task is not None and not task.done():
+            async with processing_condition:
+                with db() as c:
+                    c.execute(
+                        "UPDATE video_web_jobs SET bypass_processing_limit=1,submit_mode='auto',next_retry_at='' "
+                        "WHERE job_id=?", (next_jobid,),
+                    )
+                processing_condition.notify_all()
+        else:
+            start_worker(
+                next_jobid, req, avoid_account_for(next_jobid), bypass_processing_limit=True
+            )
+        started = detail(next_jobid)
         task_name = (
             next_task.get("task_name")
             or " / ".join(filter(None, (
@@ -2244,7 +2291,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             "job_id": next_task["id"],
             "task_name": task_name,
             "account_id": started.get("account_id") or "",
-            "message": f"已取出下一个任务并进入调度：{task_name}",
+            "message": f"已取出下一个任务并自动执行（不受并发数量限制）：{task_name}",
         }
 
     async def reset_generation(
@@ -2305,9 +2352,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                         "WHERE account_id=? AND day=?",
                         (dur, req.account_id, w["quota_day"]),
                     )
-                remaining = quota_summary(c, req.account_id)["remaining_seconds"]
-                if dur > remaining and not local_ignore_quota_check():
-                    raise HTTPException(409,f"账号当日剩余额度不足（需 {dur} 秒，剩余 {remaining} 秒）")
                 reserve_quota(c, req.account_id, dur, day)
                 c.execute("UPDATE video_web_jobs SET quota_day=?, quota_state='reserved' WHERE job_id=?",
                           (day, jobid))
@@ -2324,7 +2368,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                              result_card_index=NULL, video_url='', result_source='',
                              error_code='', error_class='', next_retry_at='',
                              recall_state='', recall_token='', recall_started_at='',
-                             dispatched_at='',
+                             dispatched_at='', bypass_processing_limit=0,
                              phase='queued', phase_started_at=?, last_heartbeat_at=?{quota_reset}
                          WHERE job_id=?""", (now, now, jobid))
             message = (
@@ -2570,7 +2614,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             raise HTTPException(422, "必须明确确认复制为新任务（可能再次消耗视频额度）")
         req = assemble_req(jobid)
         original_account_id = req.account_id or ""
-        # 复制的任务同样先进入待处理、不绑定账号；分配时优先避开原账号。
+        # 复制的任务同样先进入待处理、不绑定账号；分配时按剩余额度选择。
         req.account_id = None
         req.idempotency_key = None
         req.auto_start = False
@@ -2624,11 +2668,6 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             c.execute("INSERT INTO video_web_jobs(job_id,ratio,duration,mode,assets_json,quota_day,quota_state,submit_mode) VALUES(?,?,?,?,?,?,'',?)",
                       (jobid,req.ratio,req.duration,req.mode,"{}","",submit_mode))
             if req.account_id:
-                remaining = quota_summary(c, req.account_id)["remaining_seconds"]
-                if req.duration > remaining and not local_ignore_quota_check():
-                    raise HTTPException(
-                        409, f"账号当日剩余额度不足（需 {req.duration} 秒，剩余 {remaining} 秒）"
-                    )
                 reserve_quota(c, req.account_id, req.duration)
                 c.execute("UPDATE video_web_jobs SET quota_day=?, quota_state='reserved' WHERE job_id=?",
                           (local_day(), jobid))
@@ -3155,18 +3194,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                             and p.hostname in ("127.0.0.1", "localhost"))
             if not is_test_page and (p.scheme != "https" or p.hostname not in ("doubao.com", "www.doubao.com")):
                 raise HTTPException(422, "任务网页不是受信任的豆包地址")
-        with db() as c:
-            w = c.execute("SELECT duration, quota_day, quota_state FROM video_web_jobs WHERE job_id=?",
-                          (jobid,)).fetchone()
-            needs_new_attempt = item["status"] == "needs_review"
-            needs_reservation = needs_new_attempt or (
-                w is not None and not quota_held_today(w)
-            )
-            if w and needs_reservation:
-                dur = int(w["duration"] or 0)
-                remaining = quota_summary(c, account_id)["remaining_seconds"]
-                if dur > remaining and not local_ignore_quota_check():
-                    raise HTTPException(409, f"账号当日剩余额度不足（需 {dur} 秒，剩余 {remaining} 秒）")
+        needs_new_attempt = item["status"] == "needs_review"
         page = None
         created_page = False
         try:
@@ -3756,6 +3784,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             if task is not None and not task.done():
                 continue
             try:
+                release_queued_auto_account(jobid)
                 req = assemble_req(jobid)
                 start_worker(jobid, req, avoid_account_for(jobid))
                 started += 1
@@ -3954,14 +3983,15 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             # 否则重启后这类排队任务再无人认领，自动队列静默停摆。worker 会在拿到
             # 名额后自行分配账号，分配不到就退回待处理并记录原因。
             try:
-                if row["account_id"]:
+                release_queued_auto_account(row["id"])
+                req = assemble_req(row["id"])
+                if req.account_id:
                     # 已绑定账号的要先确认可用；未绑定的交给 worker 分配。
-                    account = get_account(row["account_id"])
+                    account = get_account(req.account_id)
                     if bool(account["archived"]) or bool(
                         account_value(account, "paused", 0)
                     ):
                         continue
-                req = assemble_req(row["id"])
                 start_worker(row["id"], req, avoid_account_for(row["id"]))
                 started += 1
             except Exception:
