@@ -21,7 +21,7 @@
 
 **账号每日视频额度：** 每个账号每天 30 秒（按本地自然日归零，可用环境变量 `DOUBAO_DAILY_VIDEO_SECONDS` 覆盖）。任务执行前按 `duration` 预占额度，只有视频成功下载并写入本地后才转为已消耗，与是否手动归档无关；失败、需复查、提交状态不确定或删除任务都只释放预占，不扣费。原任务重发或补发确认语会为新尝试重新预占，但不会把未下载成功的旧尝试记为已消耗。提交任务时 `account_id` 留空则自动选择可用账号中当日剩余额度最大的账号，不判断本地额度是否足够，剩余为 0 也可执行。额度信息在「账号管理」列表、`GET /api/accounts/{id}/quota`、任务详情 `quota` 字段中可见。
 
-**账号会员与优先级：** 账号管理中可标记会员账号并设置 `0～1000` 的优先级。自动选号只按当日剩余额度从高到低选择可用账号，额度相同时按档案创建顺序选择；优先级仅用于账号列表排序，复制和重试也采用相同规则。会员与非会员账号的模型分别由本机“任务设置”统一配置，调用方传入的 `model` 参数始终忽略。
+**账号优先级：** 账号管理中可设置 `0～1000` 的优先级。自动选号只按当日剩余额度从高到低选择可用账号，额度相同时按档案创建顺序选择；优先级仅用于账号列表排序，复制和重试也采用相同规则。所有账号的视频模型由本机“任务设置”统一配置，调用方传入的 `model` 参数始终忽略。
 
 **账号名称：** 默认开启“账号名跟随豆包”，登录后读取豆包页面左上角头像旁的用户名，每 5 秒自动同步。未登录或读取失败时保留原名；新账号登录前暂用 `doubao01`、`doubao02` 等名称。可在“账号设置”关闭跟随并手动修改名称。已有账号升级后也默认开启跟随。
 
@@ -136,7 +136,7 @@ test-live.bat --job-id job_xxxxxxxxxxxx
 | `mode` | string | 可选 | `text2video` | `text2video` / `image2video` / `first_last_frame` / `reference_images` |
 | `ratio` | string | 可选 | `16:9` | 画幅，以豆包为准（常见 `16:9` / `9:16` / `1:1`） |
 | `duration` | int | 可选 | `4` | 秒数，以豆包为准（常见 `4` / `10` / `15`） |
-| `model` | string | 可选 | 忽略 | 保留兼容但不参与选择；最终按本机“任务设置”中的会员/非会员模型执行 |
+| `model` | string | 可选 | 忽略 | 保留兼容但不参与选择；最终按本机“任务设置”中的视频模型执行 |
 | `project_name` `episode_name` `shot_name` | string | 可选 | 空 | 项目、集数、镜头名称 |
 | `idempotency_key` | string | 可选 | 空 | 幂等键，重复调用不重复建单 |
 | `auto_start` | bool | 可选 | `true` | `true` 立即执行；`false` 排队后用 `start` 启动 |
@@ -254,7 +254,7 @@ Host lzg
 | POST | `/api/accounts` | 创建账号档案，默认跟随豆包用户名（登录前暂用 `doubao01`、`doubao02`…） |
 | GET | `/api/accounts` | 列出未归档账号 |
 | GET | `/api/accounts/suggested-name` | 返回下一个默认账号名 |
-| PATCH | `/api/accounts/{id}` | 设置账号名称、跟随豆包用户名、会员标识与优先级 |
+| PATCH | `/api/accounts/{id}` | 设置账号名称、跟随豆包用户名、优先级 |
 | POST | `/api/accounts/{id}/open` | 打开对应账号的独立 Chrome |
 | POST | `/api/accounts/{id}/pause` | 暂停账号用于新任务（不打断已运行任务） |
 | POST | `/api/accounts/{id}/resume` | 恢复账号用于新任务 |
@@ -276,7 +276,7 @@ Host lzg
 | GET/PUT | `/api/settings/auto-dispatch` | 查询或设置新任务是否自动进入调度 |
 | GET/PUT | `/api/settings/scheduled-dispatch` | 查询或设置每日批量调度开关与本地执行时间（`HH:MM`） |
 | GET/PUT | `/api/settings/video-submit-mode` | 查询或设置进入调度后是否自动执行（`auto` / `manual`） |
-| GET/PUT | `/api/settings/video-models` | 查询或设置会员账号与非会员账号使用的视频模型 |
+| GET/PUT | `/api/settings/video-models` | 查询或设置所有账号统一使用的视频模型（`model`） |
 | GET/PUT | `/api/settings/auto-switch-on-exception` | 查询或设置执行异常后是否自动换号重跑；同一轮最多自动换号一次 |
 | GET/POST/PUT/DELETE | `/api/v1/videos/confirmation-presets` | 查询、新增、编辑或删除确认语预设；默认预设可编辑但不可删除，自动执行遇到确认步骤时实时使用该默认预设 |
 | POST | `/api/v1/videos/generations/{id}/send-confirmation?confirm_send=true` | 从请求体选择 `preset_id`，随时向任务已记录的豆包会话页发送该确认语；重复发送可能再次触发生成或消耗额度 |

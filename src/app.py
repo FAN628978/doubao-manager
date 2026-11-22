@@ -111,7 +111,6 @@ def init_db() -> None:
                 follow_doubao_name INTEGER NOT NULL DEFAULT 1,
                 note TEXT NOT NULL DEFAULT '',
                 profile_dir TEXT NOT NULL,
-                is_member INTEGER NOT NULL DEFAULT 0,
                 priority INTEGER NOT NULL DEFAULT 0,
                 paused INTEGER NOT NULL DEFAULT 0,
                 archived INTEGER NOT NULL DEFAULT 0,
@@ -147,8 +146,6 @@ def init_db() -> None:
         account_columns = {row["name"] for row in conn.execute("PRAGMA table_info(accounts)")}
         if "follow_doubao_name" not in account_columns:
             conn.execute("ALTER TABLE accounts ADD COLUMN follow_doubao_name INTEGER NOT NULL DEFAULT 1")
-        if "is_member" not in account_columns:
-            conn.execute("ALTER TABLE accounts ADD COLUMN is_member INTEGER NOT NULL DEFAULT 0")
         if "priority" not in account_columns:
             conn.execute("ALTER TABLE accounts ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
         if "paused" not in account_columns:
@@ -246,12 +243,10 @@ class AccountCreate(BaseModel):
     name: Optional[str] = Field(default=None, max_length=80)
     follow_doubao_name: bool = True
     note: str = Field(default="", max_length=500)
-    is_member: bool = False
     priority: int = Field(default=0, ge=0, le=1000)
 
 
 class AccountSettings(BaseModel):
-    is_member: bool
     priority: int = Field(ge=0, le=1000)
     name: Optional[str] = Field(default=None, max_length=80)
     follow_doubao_name: Optional[bool] = None
@@ -299,7 +294,6 @@ def account_row(row: sqlite3.Row) -> dict:
         "name": row["name"],
         "follow_doubao_name": bool(row["follow_doubao_name"]),
         "note": row["note"],
-        "is_member": bool(row["is_member"]),
         "priority": int(row["priority"]),
         "paused": bool(row["paused"]),
         "archived": bool(row["archived"]),
@@ -714,8 +708,8 @@ async def create_account(payload: AccountCreate):
         # A missing, null or blank name falls back to the doubao0N sequence.
         name = (payload.name or "").strip() or next_account_name(conn)
         conn.execute(
-            "INSERT INTO accounts(id, name, follow_doubao_name, note, profile_dir, is_member, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (account_id, name, int(payload.follow_doubao_name), payload.note.strip(), stored_profile_dir, int(payload.is_member), payload.priority, now_iso()),
+            "INSERT INTO accounts(id, name, follow_doubao_name, note, profile_dir, priority, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (account_id, name, int(payload.follow_doubao_name), payload.note.strip(), stored_profile_dir, payload.priority, now_iso()),
         )
         row = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -727,8 +721,8 @@ async def update_account_settings(account_id: str, payload: AccountSettings):
     get_account(account_id)
     with db() as conn:
         conn.execute(
-            "UPDATE accounts SET is_member = ?, priority = ? WHERE id = ?",
-            (int(payload.is_member), payload.priority, account_id),
+            "UPDATE accounts SET priority = ? WHERE id = ?",
+            (payload.priority, account_id),
         )
         if payload.follow_doubao_name is not None:
             conn.execute("UPDATE accounts SET follow_doubao_name=? WHERE id=?", (int(payload.follow_doubao_name), account_id))

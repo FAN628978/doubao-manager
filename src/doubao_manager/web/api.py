@@ -32,8 +32,7 @@ from .config import (
     MANUAL_WAIT,
     MAX_IMAGE,
     MAX_VIDEO,
-    MEMBER_MODEL,
-    NON_MEMBER_MODEL,
+    DEFAULT_VIDEO_MODEL,
     MODES,
     REAL_CHAT_URL,
     TERMINAL,
@@ -58,7 +57,6 @@ from .models import (
 )
 from .quota import (
     account_value,
-    enforce_account_model,
     local_day,
     quota_exhausted_setting_key,
     quota_held_today,
@@ -610,25 +608,16 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 "SELECT 1 FROM local_settings WHERE key='auto_dispatch_enabled'"
             ).fetchone() is not None
 
-    def local_video_models() -> tuple[str, str]:
+    def local_video_model() -> str:
         with db() as c:
-            rows = {
-                row["key"]: str(row["value"]).strip()
-                for row in c.execute(
-                    "SELECT key,value FROM local_settings "
-                    "WHERE key IN ('member_video_model','non_member_video_model')"
-                ).fetchall()
-            }
-        member = rows.get("member_video_model", MEMBER_MODEL)
-        non_member = rows.get("non_member_video_model", NON_MEMBER_MODEL)
-        return (
-            member if member in VIDEO_MODELS else MEMBER_MODEL,
-            non_member if non_member in VIDEO_MODELS else NON_MEMBER_MODEL,
-        )
+            row = c.execute(
+                "SELECT value FROM local_settings WHERE key='video_model'"
+            ).fetchone()
+        model = str(row["value"]).strip() if row else DEFAULT_VIDEO_MODEL
+        return model if model in VIDEO_MODELS else DEFAULT_VIDEO_MODEL
 
-    def apply_local_account_model(req: VideoRequest, account) -> None:
-        member_model, non_member_model = local_video_models()
-        enforce_account_model(req, account, member_model, non_member_model)
+    def apply_local_model(req: VideoRequest) -> None:
+        req.model = local_video_model()
 
     def local_ignore_quota_check() -> bool:
         with db() as c:
@@ -759,10 +748,8 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     @app.get("/api/settings/video-models", tags=["Local Settings"])
     async def get_video_model_settings():
         ensure_schema()
-        member_model, non_member_model = local_video_models()
         return {
-            "member_model": member_model,
-            "non_member_model": non_member_model,
+            "model": local_video_model(),
             "available_models": list(VIDEO_MODELS),
         }
 
@@ -770,17 +757,13 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
     async def update_video_model_settings(payload: VideoModelSetting):
         ensure_schema()
         with db() as c:
-            c.executemany(
-                "INSERT INTO local_settings(key,value) VALUES(?,?) "
+            c.execute(
+                "INSERT INTO local_settings(key,value) VALUES('video_model',?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (
-                    ("member_video_model", payload.member_model),
-                    ("non_member_video_model", payload.non_member_model),
-                ),
+                (payload.model,),
             )
         return {
-            "member_model": payload.member_model,
-            "non_member_model": payload.non_member_model,
+            "model": payload.model,
             "available_models": list(VIDEO_MODELS),
         }
 
@@ -1313,7 +1296,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 idle_close = idle_close_tasks.pop(req.account_id, None)
                 if idle_close is not None and not idle_close.done():
                     idle_close.cancel()
-                apply_local_account_model(req, account)
+                apply_local_model(req)
                 with db() as c:
                     c.execute(
                         "UPDATE video_web_jobs SET model=? WHERE job_id=?",
@@ -1809,7 +1792,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
         """Persist a generation request and optionally start it. Shared by the JSON and multipart entry points."""
         uses_local_defaults = req.submit_mode is None
         req.submit_mode = req.submit_mode or local_submit_mode()
-        # 模型完全由本机的会员/非会员设置决定，请求参数不参与选择。
+        # 模型完全由本机设置决定，请求参数不参与选择。
         req.model = None
         if uses_local_defaults and "auto_start" not in req.model_fields_set:
             req.auto_start = local_auto_dispatch_enabled()
@@ -1825,7 +1808,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
             if account["archived"]: raise HTTPException(409, "账号已归档")
             if bool(account_value(account, "paused", 0)):
                 raise HTTPException(409, "账号已暂停使用，请先恢复账号")
-            apply_local_account_model(req, account)
+            apply_local_model(req)
         resolve_assets(req)
         fp = fingerprint(req)
         if req.idempotency_key:
@@ -1924,7 +1907,7 @@ def mount_video_api(app, *, db, get_account, get_job, browser, base_dir, downloa
                 idle_close.cancel()
             if bool(account_value(account, "paused", 0)):
                 raise HTTPException(409, "账号已暂停使用，请先恢复账号")
-            apply_local_account_model(req, account)
+            apply_local_model(req)
         with db() as c:
             if req.account_id:
                 c.execute(

@@ -38,12 +38,12 @@ def test_account_name_defaults_and_manual_override(client, monkeypatch):
     application.open_contexts[account_id] = context
     asyncio.run(application.sync_account_name(account_id, context))
     assert client.get("/api/accounts").json()[0]["name"] == "豆包用户名"
-    # 旧客户端只更新会员/优先级时，不能重置跟随设置。
+    # 旧客户端只更新优先级时，不能重置跟随设置。
     assert client.patch(f"/api/accounts/{account_id}", json={
-        "is_member": True, "priority": 10,
+        "priority": 10,
     }).json()["follow_doubao_name"] is True
     manual = client.patch(f"/api/accounts/{account_id}", json={
-        "is_member": True, "priority": 10,
+        "priority": 10,
         "follow_doubao_name": False, "name": "  人工备注名  ",
     }).json()
     assert manual["name"] == "人工备注名"
@@ -51,7 +51,7 @@ def test_account_name_defaults_and_manual_override(client, monkeypatch):
     asyncio.run(application.sync_account_name(account_id, context))
     assert application.get_account(account_id)["name"] == "人工备注名"
     resumed = client.patch(f"/api/accounts/{account_id}", json={
-        "is_member": True, "priority": 10, "follow_doubao_name": True,
+        "priority": 10, "follow_doubao_name": True,
     }).json()
     assert resumed["name"] == "豆包用户名"
     custom = client.post("/api/accounts", json={
@@ -205,7 +205,7 @@ def test_name_following_controls_and_manual_name_in_browser():
                 await page.wait_for_function("() => !document.getElementById('accountSettingsModal').classList.contains('show')")
                 assert updates == [{
                     "name": "自定义备注", "follow_doubao_name": False,
-                    "is_member": False, "priority": 0,
+                    "priority": 0,
                 }]
                 await page.wait_for_function(
                     "() => state.accounts[0].follow_doubao_name === false"

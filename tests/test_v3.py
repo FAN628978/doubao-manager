@@ -354,24 +354,24 @@ def test_api_validation_and_idempotency(tmp_path,monkeypatch):
         assert client.get('/api/v1/videos/capabilities').json()['precise_ui_controls_required']
 
 
-def test_member_account_priority_and_forced_model(tmp_path, monkeypatch):
-    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'member.sqlite3')
+def test_account_priority_and_forced_model(tmp_path, monkeypatch):
+    monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'priority.sqlite3')
     with TestClient(application.app) as client:
         normal = client.post('/api/accounts', json={
             'name': '普通账号', 'priority': 10,
         }).json()
-        member = client.post('/api/accounts', json={
-            'name': '会员账号', 'is_member': True, 'priority': 20,
+        higher_priority = client.post('/api/accounts', json={
+            'name': '高优先级账号', 'priority': 20,
         }).json()
 
-        assert member['is_member'] is True
-        assert member['priority'] == 20
+        assert 'is_member' not in higher_priority
+        assert higher_priority['priority'] == 20
         accounts = client.get('/api/accounts').json()
-        assert [item['id'] for item in accounts[:2]] == [member['id'], normal['id']]
+        assert [item['id'] for item in accounts[:2]] == [higher_priority['id'], normal['id']]
         assert [item['sequence'] for item in accounts[:2]] == [1, 2]
 
         created = client.post('/api/v1/videos/generations', json={
-            'prompt': '会员模型覆盖测试',
+            'prompt': '本机模型覆盖测试',
             'model': 'Seedance 2.0 Mini',
             'auto_start': False,
         })
@@ -392,70 +392,61 @@ def test_member_account_priority_and_forced_model(tmp_path, monkeypatch):
         assert body['web']['model'] == 'Seedance 2.0 Fast'
 
         updated = client.patch(f"/api/accounts/{normal['id']}", json={
-            'is_member': True, 'priority': 30,
+            'priority': 30,
         })
         assert updated.status_code == 200, updated.text
-        assert updated.json()['is_member'] is True
+        assert 'is_member' not in updated.json()
         assert updated.json()['priority'] == 30
 
 
-def test_member_and_non_member_models_follow_local_settings(tmp_path, monkeypatch):
+def test_all_accounts_follow_unified_model_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(application, 'DB_PATH', tmp_path / 'model-settings.sqlite3')
     with TestClient(application.app) as client:
         defaults = client.get('/api/settings/video-models')
         assert defaults.status_code == 200
-        assert defaults.json()['member_model'] == 'Seedance 2.0 Fast'
-        assert defaults.json()['non_member_model'] == 'Seedance 2.0 Fast'
-        assert defaults.json()['available_models'] == ['Seedance 2.0 Fast']
+        assert defaults.json() == {
+            'model': 'Seedance 2.0 Fast',
+            'available_models': ['Seedance 2.0 Fast'],
+        }
 
+        # Existing account flags and the former pair of settings are ignored.
         with application.db() as conn:
+            conn.execute('ALTER TABLE accounts ADD COLUMN is_member INTEGER NOT NULL DEFAULT 0')
             conn.executemany(
                 'INSERT OR REPLACE INTO local_settings(key,value) VALUES(?,?)',
                 [('member_video_model', 'Seedance 2.0'),
                  ('non_member_video_model', 'Seedance 2.0 Mini')],
             )
-        legacy = client.get('/api/settings/video-models').json()
-        assert legacy['member_model'] == 'Seedance 2.0 Fast'
-        assert legacy['non_member_model'] == 'Seedance 2.0 Fast'
+        application.init_db()
+        assert client.get('/api/settings/video-models').json() == defaults.json()
 
-        for field in ('member_model', 'non_member_model'):
-            for removed in ('Seedance 2.5', 'Seedance 2.0', 'Seedance 2.0 Mini'):
-                payload = dict.fromkeys(
-                    ('member_model', 'non_member_model'), 'Seedance 2.0 Fast'
-                )
-                payload[field] = removed
-                assert client.put('/api/settings/video-models', json=payload).status_code == 422
+        for removed in ('Seedance 2.5', 'Seedance 2.0', 'Seedance 2.0 Mini', 'unknown'):
+            assert client.put('/api/settings/video-models', json={
+                'model': removed,
+            }).status_code == 422
 
         saved = client.put('/api/settings/video-models', json={
-            'member_model': 'Seedance 2.0 Fast',
-            'non_member_model': 'Seedance 2.0 Fast',
+            'model': 'Seedance 2.0 Fast',
         })
         assert saved.status_code == 200, saved.text
+        assert saved.json() == defaults.json()
+        with application.db() as conn:
+            assert conn.execute("SELECT value FROM local_settings WHERE key='video_model'").fetchone()[0] == 'Seedance 2.0 Fast'
 
-        member = client.post('/api/accounts', json={
-            'name': '模型会员', 'is_member': True,
-        }).json()
-        normal = client.post('/api/accounts', json={
-            'name': '模型非会员', 'is_member': False,
-        }).json()
-        member_job = client.post('/api/v1/videos/generations', json={
-            'account_id': member['id'], 'prompt': '会员模型',
-            'model': 'Seedance 2.0 Mini', 'auto_start': False,
-        })
-        normal_job = client.post('/api/v1/videos/generations', json={
-            'account_id': normal['id'], 'prompt': '非会员模型',
-            'model': 'Seedance 2.0', 'auto_start': False,
-        })
-        assert member_job.status_code == 202, member_job.text
-        assert normal_job.status_code == 202, normal_job.text
-        assert member_job.json()['web']['model'] == 'Seedance 2.0 Fast'
-        assert normal_job.json()['web']['model'] == 'Seedance 2.0 Fast'
-
-        invalid = client.put('/api/settings/video-models', json={
-            'member_model': 'unknown',
-            'non_member_model': 'Seedance 2.0 Mini',
-        })
-        assert invalid.status_code == 422
+        for legacy_flag in (True, False):
+            account = client.post('/api/accounts', json={
+                'name': '模型测试账号', 'is_member': legacy_flag,
+            }).json()
+            assert 'is_member' not in account
+            with application.db() as conn:
+                conn.execute('UPDATE accounts SET is_member=? WHERE id=?', (int(legacy_flag), account['id']))
+            job = client.post('/api/v1/videos/generations', json={
+                'account_id': account['id'], 'prompt': '统一模型',
+                'model': 'Seedance 2.0 Mini', 'auto_start': False,
+            })
+            assert job.status_code == 202, job.text
+            assert job.json()['web']['model'] == 'Seedance 2.0 Fast'
+        assert all('is_member' not in account for account in client.get('/api/accounts').json())
 
 
 def test_paused_account_is_not_used_for_new_generations(tmp_path, monkeypatch):
@@ -555,7 +546,7 @@ def test_copied_portable_data_rebases_account_profiles(tmp_path, monkeypatch):
             'SELECT profile_dir FROM accounts WHERE id=?', (account_id,),
         ).fetchone()[0]
         schema_version = conn.execute('PRAGMA user_version').fetchone()[0]
-    assert {'is_member', 'priority', 'paused'} <= columns
+    assert {'priority', 'paused'} <= columns
     assert schema_version == application.DATA_SCHEMA_VERSION
     assert profile_dir == str(Path('data') / 'profiles' / account_id)
     assert application.portable_path(profile_dir).joinpath('login-state').read_text(encoding='utf-8') == 'preserved'

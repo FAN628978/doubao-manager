@@ -9,27 +9,12 @@ from .config import (
     ACTIVE,
     DAILY_VIDEO_SECONDS,
     MANUAL_WAIT,
-    MEMBER_MODEL,
-    NON_MEMBER_MODEL,
     TERMINAL,
 )
 from .utils import ts
 
 def account_value(account, key: str, default=None):
     return account[key] if key in account.keys() else default
-
-
-def enforce_account_model(
-    req: "VideoRequest",
-    account,
-    member_model: str = MEMBER_MODEL,
-    non_member_model: str = NON_MEMBER_MODEL,
-) -> None:
-    req.model = (
-        member_model
-        if bool(account_value(account, "is_member", 0))
-        else non_member_model
-    )
 
 
 def local_day() -> str:

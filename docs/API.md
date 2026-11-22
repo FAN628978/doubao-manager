@@ -7,7 +7,7 @@
 
 账号创建接口 `POST /api/accounts` 默认使用 `follow_doubao_name=true`。账号浏览器打开并登录后，服务每 5 秒读取豆包头像旁的用户名并保存为账号名称；未登录或读取失败时保留原名。旧账号升级后也默认启用，登录前仍使用原名称。
 
-`GET /api/accounts` 返回 `follow_doubao_name` 字段。若需手动命名，可通过 `PATCH /api/accounts/{id}` 提交 `{"is_member":false,"priority":0,"follow_doubao_name":false,"name":"自定义名称"}`；会员与优先级请传入账号当前值。旧客户端不传新增字段时，保留原有跟随设置。
+`GET /api/accounts` 返回 `follow_doubao_name` 字段。若需手动命名，可通过 `PATCH /api/accounts/{id}` 提交 `{"priority":0,"follow_doubao_name":false,"name":"自定义名称"}`；优先级请传入账号当前值。旧客户端不传新增字段时，保留原有跟随设置。
 
 ---
 
@@ -90,7 +90,7 @@ Content-Type: multipart/form-data
 | `mode` | string | 可选 | `text2video` | 生成模式，见下方枚举 |
 | `ratio` | string | 可选 | `16:9` | 画幅，以豆包实际选项为准（常见 `16:9` / `9:16` / `1:1`） |
 | `duration` | int | 可选 | `4` | 秒数，以豆包实际选项为准（常见 `4` / `10` / `15`） |
-| `model` | string | 可选 | 忽略 | 兼容字段，不参与最终模型选择；最终按本机“任务设置”中的会员/非会员模型执行 |
+| `model` | string | 可选 | 忽略 | 兼容字段，不参与最终模型选择；最终按本机“任务设置”中的视频模型执行 |
 | `project_name` | string | 可选 | 空 | 项目名称，≤120 字 |
 | `episode_name` | string | 可选 | 空 | 集数名称，≤120 字 |
 | `shot_name` | string | 可选 | 空 | 镜头名称，≤120 字 |
@@ -122,7 +122,7 @@ Content-Type: multipart/form-data
 | --- | --- |
 | `Seedance 2.0 Fast` | 快速出片 |
 
-> 最终模型只读取本机“任务设置”：会员账号和非会员账号可分别配置。请求中的 `model` 参数始终忽略；账号在进入处理前确定后，系统按账号会员状态写入并选择模型。会员与非会员均仅支持 `Seedance 2.0 Fast`；旧设置中的其他模型自动回退为此模型。
+> 最终模型只读取本机“任务设置”，所有账号统一使用视频模型。请求中的 `model` 参数始终忽略；系统在处理任务时写入并选择本机模型。目前仅支持 `Seedance 2.0 Fast`；旧设置中的其他模型自动回退为此模型。`GET/PUT /api/settings/video-models` 使用统一的 `model` 字段，例如 `{"model":"Seedance 2.0 Fast"}`。账号接口不再使用或返回 `is_member` 字段，旧客户端传入该字段时忽略。
 
 ### 3.5 响应（HTTP 202）
 

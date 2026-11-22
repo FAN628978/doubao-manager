@@ -14,13 +14,12 @@ SETTING_KEYS = (
     "auto_switch_on_exception",
     "default_confirmation_preset_id",
     "ignore_quota_check",
-    "member_video_model",
-    "non_member_video_model",
     "processing_limit",
     "processing_limit_v2",
     "scheduled_dispatch_enabled",
     "scheduled_dispatch_time",
     "video_execution_service_enabled",
+    "video_model",
     "video_submit_mode",
 )
 

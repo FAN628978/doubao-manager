@@ -94,8 +94,7 @@ class Server:
         self.task_acceptance_updates = []
         self.submit_mode = "auto"
         self.submit_mode_updates = []
-        self.member_video_model = "Seedance 2.0 Fast"
-        self.non_member_video_model = "Seedance 2.0 Fast"
+        self.video_model = "Seedance 2.0 Fast"
         self.video_model_updates = []
         self.ignore_quota_check = False
         self.ignore_quota_updates = []
@@ -104,7 +103,7 @@ class Server:
         self.job_account_updates = []
         self.accounts = [{
             "id": "account_1", "name": "账号一", "note": "",
-            "is_member": False, "priority": 0, "paused": False,
+            "priority": 0, "paused": False,
             "archived": False, "sequence": 1, "browser_open": False,
             "quota": {
                 "remaining_seconds": 30, "consumed_seconds": 0,
@@ -228,18 +227,13 @@ class Server:
         elif url.endswith("/api/settings/video-models"):
             if route.request.method == "PUT":
                 body = json.loads(route.request.post_data or "{}")
-                self.member_video_model = body.get("member_model")
-                self.non_member_video_model = body.get("non_member_model")
-                self.video_model_updates.append((
-                    self.member_video_model,
-                    self.non_member_video_model,
-                ))
+                self.video_model = body.get("model")
+                self.video_model_updates.append(self.video_model)
             await route.fulfill(
                 status=200,
                 content_type="application/json",
                 body=_json({
-                    "member_model": self.member_video_model,
-                    "non_member_model": self.non_member_video_model,
+                    "model": self.video_model,
                     "available_models": [
                         "Seedance 2.0 Fast",
                     ],
@@ -1157,12 +1151,11 @@ def test_automation_switches_are_saved_independently():
                 ) == "定时已关闭 · 可先设置执行时间"
                 assert await page.inner_text("#dispatchFlowState") == "自动进入调度"
                 assert await page.inner_text("#executionFlowState") == "自动执行完整流程"
-                for selector in ("#memberModelSetting", "#nonMemberModelSetting"):
-                    assert await page.locator(f"{selector} option").all_text_contents() == [
-                        "Seedance 2.0 Fast"
-                    ]
-                assert await page.input_value("#memberModelSetting") == "Seedance 2.0 Fast"
-                assert await page.input_value("#nonMemberModelSetting") == "Seedance 2.0 Fast"
+                assert await page.locator("#videoModelSetting option").all_text_contents() == [
+                    "Seedance 2.0 Fast"
+                ]
+                assert await page.input_value("#videoModelSetting") == "Seedance 2.0 Fast"
+                assert await page.locator("#submitModeModal").get_by_text("会员", exact=False).count() == 0
 
                 await page.click("#autoDispatchSettingToggle")
                 await page.fill("#autoDispatchIntervalSetting", "12")
@@ -1190,8 +1183,7 @@ def test_automation_switches_are_saved_independently():
                     }
                 """)
                 assert next_day_countdown == "距离下次执行还有 23:15:00"
-                await page.select_option("#memberModelSetting", "Seedance 2.0 Fast")
-                await page.select_option("#nonMemberModelSetting", "Seedance 2.0 Fast")
+                await page.select_option("#videoModelSetting", "Seedance 2.0 Fast")
                 assert not await page.is_checked("#autoDispatchSettingToggle")
                 assert await page.is_checked("#autoExecutionSettingToggle")
                 assert await page.inner_text("#dispatchFlowState") == "等待手动放行"
@@ -1205,7 +1197,7 @@ def test_automation_switches_are_saved_independently():
                 assert server.scheduled_dispatch_updates == [(True, "03:15")]
                 assert server.submit_mode_updates == ["auto"]
                 assert server.video_model_updates == [
-                    ("Seedance 2.0 Fast", "Seedance 2.0 Fast")
+                    "Seedance 2.0 Fast"
                 ]
                 assert await page.evaluate(
                     "() => state.autoDispatchEnabled"
@@ -1323,25 +1315,25 @@ def test_task_settings_show_fixed_largest_remainder_selection():
         server.accounts = [
             {
                 "id": "account_low", "name": "low", "note": "",
-                "is_member": False, "priority": 100, "paused": False,
+                "priority": 100, "paused": False,
                 "archived": False, "sequence": 1, "browser_open": False,
                 "quota": {"remaining_seconds": 0},
             },
             {
                 "id": "account_max", "name": "max", "note": "",
-                "is_member": False, "priority": 0, "paused": False,
+                "priority": 0, "paused": False,
                 "archived": False, "sequence": 2, "browser_open": False,
                 "quota": {"remaining_seconds": 12},
             },
             {
                 "id": "account_paused", "name": "paused", "note": "",
-                "is_member": False, "priority": 0, "paused": True,
+                "priority": 0, "paused": True,
                 "archived": False, "sequence": 3, "browser_open": False,
                 "quota": {"remaining_seconds": 30},
             },
             {
                 "id": "account_busy", "name": "busy", "note": "",
-                "is_member": False, "priority": 0, "paused": False,
+                "priority": 0, "paused": False,
                 "archived": False, "sequence": 4, "browser_open": True,
                 "quota": {"remaining_seconds": 30},
             },

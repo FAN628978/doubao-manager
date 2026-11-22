@@ -83,8 +83,7 @@ class TaskAcceptanceSetting(BaseModel):
 
 
 class VideoModelSetting(BaseModel):
-    member_model: Literal["Seedance 2.0 Fast"]
-    non_member_model: Literal["Seedance 2.0 Fast"]
+    model: Literal["Seedance 2.0 Fast"]
 
 
 class ProcessingLimitSetting(BaseModel):
